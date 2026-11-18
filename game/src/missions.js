@@ -1,205 +1,187 @@
 // SOLMAR NIGHTS — missions.js
-// The eight-job story arc: Dana Reyes runs errands for fixer Mara Solis
-// against the Salt Kings, ending at Marina Pier. Each mission is a list of
-// steps; this module tracks progress, moves the objective marker, pays out
-// rewards and unlocks vehicles and weapons. Steps are plain data in
-// config.js (MISSIONS); the step semantics live here.
+// Eight story jobs for fixer Mara Solis, closing the arc against the Salt
+// Kings at Marina Pier. Each mission is a small state machine of objectives:
+// go somewhere, talk, collect, chase, fight, deliver, escape.
 
-import { MISSIONS } from './config.js';
-import { dist } from './physics.js';
+import { MISSION_PAY } from './config.js';
 
-export function createMissionState() {
-  return {
-    active: false,
-    index: 0, // next mission to start (0-based)
-    def: null,
-    step: 0,
-    progress: 0, // kills / fares / waves counted for the current step
-    marker: null, // {x, y, label} or null
-    timer: 0,
-    completedCount: 0,
-    failed: false,
-  };
-}
+export const MISSIONS = [
+  {
+    id: 'm1', title: 'First Errand', giver: 'Mara Solis',
+    brief: 'Mara needs a package picked up from the pier and brought to the diner. Easy money. Don\'t make it complicated.',
+    steps: [
+      { type: 'goto', label: 'Pick up the package at Marina Pier', x: 3520, y: 3260, radius: 90 },
+      { type: 'goto', label: 'Deliver it to Sol Diner', x: 1050, y: 1740, radius: 90 },
+    ],
+    unlock: 'pistol',
+  },
+  {
+    id: 'm2', title: 'Taxi for Trouble', giver: 'Mara Solis',
+    brief: 'A client of Mara\'s needs a ride across town, fast, and the Salt Kings are watching the bridges. Grab a taxi and don\'t stop for red lights.',
+    steps: [
+      { type: 'vehicle', label: 'Get a taxi (steal one or find one)', vehicle: 'taxi' },
+      { type: 'goto', label: 'Pick up the client at Old Town', x: 960, y: 960, radius: 100 },
+      { type: 'goto', label: 'Drop the client at the Marina', x: 3200, y: 3200, radius: 100 },
+    ],
+    unlock: null,
+  },
+  {
+    id: 'm3', title: 'Kings in the Market', giver: 'Mara Solis',
+    brief: 'Salt Kings runners are shaking down the Mercado stalls. Show them Solmar isn\'t theirs. Bring a gun.',
+    steps: [
+      { type: 'goto', label: 'Reach the Mercado', x: 960, y: 1600, radius: 120 },
+      { type: 'kill', label: 'Clear the Salt Kings runners', count: 4, x: 960, y: 1600 },
+      { type: 'goto', label: 'Report back to Mara\'s diner', x: 1050, y: 1740, radius: 90 },
+    ],
+    unlock: 'shotgun',
+  },
+  {
+    id: 'm4', title: 'Hot Wheels', giver: 'Mara Solis',
+    brief: 'A Vortex GT is parked downtown, owner "away". Take it, lose the cops if they notice, and bring it to the spray shop for a new identity.',
+    steps: [
+      { type: 'vehicle', label: 'Steal the Vortex GT downtown', vehicle: 'sport', x: 1600, y: 1600 },
+      { type: 'goto', label: 'Get it to Chroma Spray', x: 2330, y: 1500, radius: 100 },
+      { type: 'interact', label: 'Respray the car (press F at the shop)', shop: 'spray' },
+    ],
+    unlock: 'smg',
+  },
+  {
+    id: 'm5', title: 'The Informant', giver: 'Mara Solis',
+    brief: 'An informant at the beach has the Kings\' ledger. Meet him at the pier cafe, then get the ledger to Mara before the Kings\' hit squad arrives.',
+    steps: [
+      { type: 'goto', label: 'Meet the informant at Pier Cafe', x: 3200, y: 3200, radius: 90 },
+      { type: 'collect', label: 'Take the ledger', x: 3200, y: 3200, radius: 70 },
+      { type: 'escape', label: 'Lose the hit squad, then reach the diner', x: 1050, y: 1740, radius: 100 },
+    ],
+    unlock: null,
+  },
+  {
+    id: 'm6', title: 'Warehouse Lights', giver: 'Mara Solis',
+    brief: 'The Kings stash their product in the old warehouse by the marina. Burn it — quietly if you can, loudly if you must.',
+    steps: [
+      { type: 'goto', label: 'Reach the marina warehouse', x: 3200, y: 2560, radius: 120 },
+      { type: 'kill', label: 'Clear the warehouse guards', count: 5, x: 3200, y: 2560 },
+      { type: 'interact', label: 'Torch the stash (press F)', x: 3200, y: 2560, radius: 80 },
+    ],
+    unlock: 'armor',
+  },
+  {
+    id: 'm7', title: 'The Last Delivery', giver: 'Mara Solis',
+    brief: 'One last run: a delivery van full of "paperwork" has to cross town in five minutes while every King in Solmar hunts it. Drive like your life depends on it.',
+    steps: [
+      { type: 'vehicle', label: 'Take the delivery van', vehicle: 'van', x: 960, y: 960 },
+      { type: 'goto', label: 'Deliver to the Marina, fast', x: 3200, y: 3200, radius: 110, timed: 300 },
+    ],
+    unlock: null,
+  },
+  {
+    id: 'm8', title: 'Salt in the Wound', giver: 'Mara Solis',
+    brief: 'It ends tonight. The Salt Kings\' boss, Rook, is at Marina Pier with his enforcers. Take the pier back and finish this.',
+    steps: [
+      { type: 'goto', label: 'Reach Marina Pier', x: 3520, y: 3260, radius: 120 },
+      { type: 'kill', label: 'Defeat Rook and his enforcers', count: 6, x: 3520, y: 3260, boss: true },
+      { type: 'goto', label: 'Meet Mara at the pier', x: 3520, y: 3260, radius: 80 },
+    ],
+    unlock: 'finale',
+  },
+];
 
-export function currentStep(m) {
-  return m.def ? m.def.steps[m.step] : null;
-}
-
-export function objectiveText(m) {
-  if (!m.active || !m.def) return 'Free roam — press F near the gold M to start a job.';
-  const s = currentStep(m);
-  if (!s) return m.def.title;
-  let label = s.label;
-  if (s.type === 'kill') label += ` (${m.progress}/${s.count})`;
-  if (s.type === 'fare') label += ` (${m.progress}/${s.count})`;
-  if (s.type === 'survive') label += ` (${m.progress}/${s.waves} waves)`;
-  return `${m.def.title}: ${label}`;
-}
-
-export function startMission(world, index) {
-  const m = world.mission;
-  const def = MISSIONS[index];
-  if (!def) return false;
-  m.active = true;
-  m.def = def;
-  m.step = 0;
-  m.progress = 0;
-  m.failed = false;
-  m.timer = 0;
-  world.message(`JOB ${def.id}: ${def.title} — ${def.text}`, '#e8b81a');
-  world.audio.blip(880);
-  refreshMarker(world);
-  // Mission-specific setup.
-  if (def.id === 4) spawnSportTarget(world);
-  if (def.id === 5) spawnDeliveryVan(world);
-  if (def.id === 6) spawnConvoy(world);
-  if (def.id === 7) {
-    world.gangs.wave = 0;
-    world.gangs.spawnTimer = 9999;
-    startSurvivalWave(world);
+export class MissionManager {
+  constructor() {
+    this.index = 0;          // next mission to start
+    this.active = null;      // { mission, step, kills, timer, ... }
+    this.completed = [];
+    this.available = true;
   }
-  return true;
-}
+  currentDef() { return MISSIONS[this.index] || null; }
+  get pay() { return MISSION_PAY[this.index] || 500; }
 
-function refreshMarker(world) {
-  const m = world.mission;
-  const s = currentStep(m);
-  if (!s) { m.marker = null; return; }
-  if (s.type === 'goto' || s.type === 'pickup' || s.type === 'deliver') {
-    m.marker = { x: s.x, y: s.y, label: s.label };
-  } else if (s.type === 'steal') {
-    const car = world.cars.find((c) => c.kind === s.kind && c.missionTarget);
-    m.marker = car ? { x: car.x, y: car.y, label: s.label } : null;
-  } else {
-    m.marker = null;
+  start(world) {
+    const def = this.currentDef();
+    if (!def || this.active) return false;
+    this.active = { mission: def, step: 0, kills: 0, timer: 0, collected: false, done: false };
+    world.addToast(`New job: ${def.title} — ${def.giver}`);
+    world.audio.phone();
+    return true;
   }
-}
-
-function spawnSportTarget(world) {
-  const car = world.spawnCar('sport', 3360, 2640, Math.PI, 'parked');
-  car.missionTarget = true;
-  car.color = '#e8b81a';
-}
-
-function spawnDeliveryVan(world) {
-  const p = world.player;
-  const car = world.spawnCar('delivery', p.x + 120, p.y, 0, 'parked');
-  car.missionTarget = true;
-  car.color = '#e8e8e8';
-  world.message('The delivery van is parked nearby — get in and drive!', '#e8b81a');
-}
-
-function spawnConvoy(world) {
-  for (let i = 0; i < 4; i++) {
-    const g = { x: 3120, y: 720 + i * 90, hp: 80, angle: 0, speed: 120, isEnforcer: false, weapon: 'pistol', shootTimer: 1, color: '#7a1a8c', radius: 15 };
-    world.gangs.active.push(g);
-    const car = world.spawnCar('van', 3120, 720 + i * 90, 0, 'parked');
-    car.gangCar = true;
+  stepDef() {
+    if (!this.active) return null;
+    return this.active.mission.steps[this.active.step];
   }
-  world.message('Salt Kings convoy spotted on the east road!', '#e8b81a');
-}
-
-function startSurvivalWave(world) {
-  // Waves are driven by gangs.js; kick the first one off via the world hook.
-  world.startGangWave();
-}
-
-export function completeStep(world) {
-  const m = world.mission;
-  m.step += 1;
-  m.progress = 0;
-  if (m.step >= m.def.steps.length) {
-    completeMission(world);
-  } else {
-    refreshMarker(world);
-    world.audio.cash();
+  objectiveText() {
+    if (!this.active) {
+      const def = this.currentDef();
+      return def ? `Job available: ${def.title} — press F near Mara's diner to start` : 'Story complete — Solmar is yours.';
+    }
+    const s = this.stepDef();
+    if (!s) return '';
+    if (s.type === 'kill') return `${s.label} (${this.active.kills}/${s.count})`;
+    return s.label;
   }
-}
-
-export function completeMission(world) {
-  const m = world.mission;
-  const def = m.def;
-  world.player.money += def.reward;
-  world.stats.reputation += 2;
-  if (def.unlock) {
-    if (def.unlock === 'pistol' || def.unlock === 'shotgun') {
-      world.player.weapons[def.unlock] = true;
-      world.player.ammo[def.unlock] = 24;
-      world.message(`Unlocked: ${def.unlock}!`, '#7ae88c');
+  // Called by the world when the player does something a step cares about.
+  onKill(world) {
+    if (!this.active) return;
+    const s = this.stepDef();
+    if (s && s.type === 'kill') {
+      this.active.kills++;
+      if (this.active.kills >= s.count) this.advance(world);
+    }
+  }
+  onCollect(world) {
+    if (!this.active) return;
+    const s = this.stepDef();
+    if (s && s.type === 'collect') this.advance(world);
+  }
+  onInteract(world) {
+    if (!this.active) return;
+    const s = this.stepDef();
+    if (s && s.type === 'interact') this.advance(world);
+  }
+  advance(world) {
+    this.active.step++;
+    this.active.kills = 0;
+    if (this.active.step >= this.active.mission.steps.length) {
+      this.complete(world);
     } else {
-      world.player.unlockedCars.push(def.unlock);
-      world.message(`Unlocked vehicle: ${def.unlock}!`, '#7ae88c');
+      world.addToast(`Objective updated: ${this.objectiveText()}`);
     }
   }
-  world.message(`JOB COMPLETE: ${def.title}  +$${def.reward}`, '#7ae88c');
-  world.audio.cash();
-  m.completedCount += 1;
-  m.index = Math.min(m.index + 1, MISSIONS.length);
-  m.active = false;
-  m.def = null;
-  m.marker = null;
-}
-
-export function failMission(world, reason) {
-  const m = world.mission;
-  if (!m.active) return;
-  world.message(`JOB FAILED: ${reason} — talk to Mara to retry.`, '#e85a5a');
-  m.active = false;
-  m.def = null;
-  m.marker = null;
-  m.progress = 0;
-}
-
-// Called every frame while playing. Checks step completion and drives
-// mission-only spawns (hit squads during delivery, escape checks, ...).
-export function updateMissions(world, dt) {
-  const m = world.mission;
-  if (!m.active || !m.def) return;
-  const s = currentStep(m);
-  if (!s) return;
-  const p = world.player;
-
-  if (s.type === 'goto' || s.type === 'pickup' || s.type === 'deliver') {
-    const d = dist(p.x, p.y, s.x, s.y);
-    const inCar = !!p.inCar;
-    const ok = s.type === 'deliver' ? (inCar && d < 130) : d < 90;
-    if (ok) {
-      if (s.type === 'pickup') {
-        world.player.money += 50;
-        world.message('Package secured.', '#7ae88c');
+  complete(world) {
+    const def = this.active.mission;
+    const pay = MISSION_PAY[this.index] || 500;
+    world.money += pay;
+    world.rep += 10;
+    this.completed.push(def.id);
+    world.stats.missionsDone++;
+    if (def.unlock) world.unlock(def.unlock);
+    world.addToast(`Job complete: ${def.title} — $${pay}`);
+    world.audio.cash();
+    this.index++;
+    this.active = null;
+  }
+  update(dt, world) {
+    if (!this.active) return;
+    const s = this.stepDef();
+    if (!s) return;
+    this.active.timer += dt;
+    if (s.type === 'goto' || s.type === 'escape' || s.type === 'collect') {
+      const p = world.player;
+      const d = Math.hypot(p.x - s.x, p.y - s.y);
+      if (d < s.radius) {
+        if (s.type === 'escape' && world.wanted.stars > 0) return; // must lose them first
+        this.advance(world);
       }
-      completeStep(world);
     }
-  } else if (s.type === 'steal') {
-    if (p.inCar && p.inCar.kind === 'sport' && p.inCar.missionTarget) {
-      completeStep(world);
-      world.message('Nice wheels. Now lose the cops!', '#e8b81a');
+    if (s.type === 'vehicle') {
+      const car = world.player.car;
+      if (car && (!s.vehicle || car.type === s.vehicle)) this.advance(world);
     }
-  } else if (s.type === 'escape') {
-    if (world.wanted.stars === 0) completeStep(world);
-  } else if (s.type === 'kill') {
-    if (m.progress >= s.count) completeStep(world);
-  } else if (s.type === 'fare') {
-    if (m.progress >= s.count) completeStep(world);
-  } else if (s.type === 'survive') {
-    if (m.progress >= s.waves) completeStep(world);
-    else if (!world.gangs.waveInProgress && world.gangs.wave > 0 && m.progress < s.waves) {
-      // Between waves: short breather, then the next wave.
-      m.timer += dt;
-      if (m.timer > 6) {
-        m.timer = 0;
-        world.startGangWave();
+    if (s.timed) {
+      const left = s.timed - this.active.timer;
+      if (left <= 0) {
+        world.addToast('Too slow — the job fell through. Talk to Mara to retry.');
+        this.active = null;
       }
     }
   }
-  refreshMarker(world);
-}
-
-// The mission giver marker: Mara waits at Mercado until job 1 starts, then
-// at the diner between jobs.
-export function giverPosition(world) {
-  return world.mission.index === 0
-    ? { x: 2640, y: 720 }
-    : { x: 720, y: 2640 };
 }

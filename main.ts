@@ -1,13 +1,9 @@
-// SOLMAR NIGHTS — main.ts (gta6-01 entry program, Node 22, stdlib only)
-// The game is this directory's game/ folder: plain static files a desktop
-// browser loads offline (game/index.html and its ES modules, no library and
-// no network request). This program hands it in: it copies game/ and
-// screenshots/ from beside this file to /output and writes
-// /output/dossier.json, the summary the judge reads, with the vendored
-// make.fun library.
-//
-// Serve it locally with `node serve.ts`, then open http://localhost:8080.
-// Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
+// SOLMAR NIGHTS v2.5 — main.ts (Node 22, standard library only)
+// The program that hands the game in: it copies game/ (the playable game as
+// plain static files) and screenshots/ (four real renders of the game) from
+// beside this file to /output, and writes /output/dossier.json with the
+// vendored make.fun library's buildDossier. Outside the grader's container,
+// MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';

@@ -1,37 +1,34 @@
 // SOLMAR NIGHTS — save.js
-// localStorage save/load. The save is a small JSON snapshot of the player's
-// progress (money, weapons, mission progress, packages, position, reputation)
-// — never the whole world, so a save from an older build still loads.
+// Save / load to localStorage. Only plain progress data is stored; the city
+// is rebuilt from the seed, so a save is a few hundred bytes.
 
-import { SAVE_KEY } from './config.js';
+import { SAVE_KEY, SETTINGS_KEY } from './config.js';
 
-export function saveGame(world) {
+export function saveGame(state) {
   try {
-    const p = world.player;
+    const p = state.player;
     const data = {
-      v: 2,
-      money: p.money,
-      hp: p.hp,
-      x: p.x, y: p.y,
+      version: 25,
+      money: state.money,
+      rep: state.rep,
+      missionIndex: state.missions.index,
+      completed: state.missions.completed,
+      packages: state.packagesFound,
       weapons: p.weapons,
-      ammo: p.ammo,
       weapon: p.weapon,
+      ammo: { mag: p.mag, reserve: p.reserve },
+      armor: p.armor,
+      health: p.health,
       outfit: p.outfit,
-      unlockedCars: p.unlockedCars,
-      missionIndex: world.mission.index,
-      completedCount: world.mission.completedCount,
-      packages: world.city.packages.map((pk) => pk.found),
-      reputation: world.stats.reputation,
-      kills: world.stats.kills,
-      carsStolen: world.stats.carsStolen,
-      fares: world.stats.fares,
-      time: world.time,
+      seed: state.seed,
+      time: state.timeHours,
+      x: p.x, y: p.y,
+      unlocked: state.unlocked,
+      stats: state.stats,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
 export function loadGame() {
@@ -39,42 +36,27 @@ export function loadGame() {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (!data || data.v !== 2) return null;
+    if (data.version !== 25) return null;
     return data;
-  } catch {
-    return null;
-  }
-}
-
-export function clearSave() {
-  try { localStorage.removeItem(SAVE_KEY); } catch { /* private mode */ }
+  } catch { return null; }
 }
 
 export function hasSave() {
-  return loadGame() !== null;
+  try { return !!localStorage.getItem(SAVE_KEY); } catch { return false; }
 }
 
-export function applySave(world, data) {
-  const p = world.player;
-  p.money = data.money ?? p.money;
-  p.hp = data.hp ?? p.hp;
-  p.x = data.x ?? p.x;
-  p.y = data.y ?? p.y;
-  p.weapons = { ...p.weapons, ...(data.weapons || {}) };
-  p.ammo = { ...p.ammo, ...(data.ammo || {}) };
-  p.weapon = data.weapon || p.weapon;
-  p.outfit = data.outfit ?? p.outfit;
-  p.unlockedCars = data.unlockedCars || p.unlockedCars;
-  world.mission.index = data.missionIndex ?? 0;
-  world.mission.completedCount = data.completedCount ?? 0;
-  if (Array.isArray(data.packages)) {
-    data.packages.forEach((found, i) => {
-      if (world.city.packages[i]) world.city.packages[i].found = !!found;
-    });
-  }
-  world.stats.reputation = data.reputation ?? 0;
-  world.stats.kills = data.kills ?? 0;
-  world.stats.carsStolen = data.carsStolen ?? 0;
-  world.stats.fares = data.fares ?? 0;
-  world.time = data.time ?? world.time;
+export function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
+}
+
+export function saveSettings(s) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* ignore */ }
+}
+
+export function loadSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
 }

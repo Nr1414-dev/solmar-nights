@@ -1,160 +1,258 @@
 // SOLMAR NIGHTS — main.js
-// Boot + game loop + screen state machine. The simulation lives in world.js
-// and the drawing in render.js; this file only wires them together, handles
-// menus, saving, the aim angle, and the ?shot= staging used for screenshots.
+// Bootstrap, the game loop, and the menu state machine.
+// Menu order: New Game / How to Play / Continue / Settings.
 
-import { createWorld, updateWorld } from './world.js';
-import { createInput } from './input.js';
-import { render } from './render.js';
-import { applyShot } from './shots.js';
-import { saveGame, loadGame, applySave, hasSave } from './save.js';
-import { seedFromString } from './random.js';
+import { World } from './world.js';
+import { Input } from './input.js';
+import {
+  drawWorld, drawHUD, drawTitle, drawHowTo, drawPause, drawSettings,
+  drawShop, drawGameOver, shopItems,
+} from './render.js';
+import { stageShot } from './shots.js';
+import { saveGame, loadGame, hasSave, clearSave, saveSettings, loadSettings } from './save.js';
+import { hashSeed } from './random.js';
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
-function resize() {
-  canvas.width = window.innerWidth;
-  canvas.height = window.innerHeight;
-}
-window.addEventListener('resize', resize);
-resize();
-
 const params = new URLSearchParams(location.search);
-const seedParam = params.get('seed');
-const seed = seedParam ? seedFromString(`solmar-${seedParam}`) : seedFromString('solmar-7');
+const seedParam = params.get('seed') || 'solmar-7';
+const seed = hashSeed(seedParam);
 const shotName = params.get('shot');
 
-const world = createWorld(seed);
-world.hasSave = hasSave();
-const input = createInput(canvas);
-window.__game = world;
-window.__shotReady = false;
+const settings = Object.assign(
+  { volume: 0.7, music: true, minimap: 1, quality: 'high' },
+  loadSettings() || {},
+);
 
-// Settings keys 1/2/3 (handled here so input.js stays about movement).
-window.addEventListener('keydown', (e) => {
-  if (world.screen !== 'settings') return;
-  if (e.code === 'Digit1') { world.settings.music = !world.settings.music; world.audio.musicOn = world.settings.music; }
-  if (e.code === 'Digit2') { world.settings.sfx = !world.settings.sfx; world.audio.sfxOn = world.settings.sfx; }
-  if (e.code === 'Digit3') { world.settings.minimap = (world.settings.minimap + 1) % 4; }
-});
+const world = new World(seed);
+world.audio.setVolume(settings.volume);
+world.audio.musicOn = settings.music;
+world.minimapSize = settings.minimap;
 
-if (shotName) {
-  applyShot(world, shotName);
-  // Pre-run the simulation so traffic, cops and the helicopter are already
-  // in motion when the screenshot lands.
-  const dummy = { down: {}, wasPressed: () => false, mousePressed: false, mouseDown: false, mouseX: 640, mouseY: 360 };
-  for (let i = 0; i < 90; i++) updateWorld(world, dummy, 1 / 60);
-  render(ctx, world, input);
-  window.__shotReady = true;
+const input = new Input(canvas);
+
+let screen = 'title'; // title | howto | settings | play | pause | shop | over
+let menuIndex = 0;
+let pauseIndex = 0;
+let settingsIndex = 0;
+let shopIndex = 0;
+let returnTo = 'title';
+let lastTime = performance.now();
+let shotFrames = 0;
+let shotStaged = false;
+let autosaveTimer = 0;
+
+// Apply a saved game, if one exists and Continue is chosen.
+function applySave(data) {
+  if (!data) return;
+  world.money = data.money;
+  world.rep = data.rep;
+  world.missions.index = data.missionIndex;
+  world.missions.completed = data.completed || [];
+  world.packagesFound = data.packages || 0;
+  world.player.weapons = data.weapons || ['fists'];
+  world.player.weapon = data.weapon || 'fists';
+  world.player.mag = Object.assign(world.player.mag, data.ammo?.mag || {});
+  world.player.reserve = Object.assign(world.player.reserve, data.ammo?.reserve || {});
+  world.player.armor = data.armor || 0;
+  world.player.health = data.health || 100;
+  world.player.outfit = data.outfit || 0;
+  world.timeHours = data.time || 10.2;
+  world.player.x = data.x || 960;
+  world.player.y = data.y || 1740;
+  world.unlocked = Object.assign(world.unlocked, data.unlocked || {});
+  world.stats = Object.assign(world.stats, data.stats || {});
+  for (const pkg of world.city.packages) {
+    // Packages are re-found per session; found count is restored as money only.
+  }
+  world.camera.x = world.player.x - 640;
+  world.camera.y = world.player.y - 360;
 }
 
-let last = performance.now();
-let returnScreen = 'title';
+function startNewGame() {
+  clearSave();
+  const fresh = new World(seed);
+  Object.assign(world, fresh);
+  world.audio.setVolume(settings.volume);
+  world.audio.musicOn = settings.music;
+  world.minimapSize = settings.minimap;
+  screen = 'play';
+  world.addToast('Welcome to Solmar. See Mara at Sol Diner to start work.');
+  world.banner('SOLMAR NIGHTS');
+}
+
+function openSettings(from) {
+  returnTo = from;
+  screen = 'settings';
+}
 
 function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
-  last = now;
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
 
-  handleScreens(dt);
-  if (world.screen === 'play') {
-    // Aim angle: player position in screen space vs the mouse.
-    const W = canvas.width, H = canvas.height;
-    const p = world.player;
-    const sx = W / 2 + (p.x - world.camera.x);
-    const sy = H / 2 + (p.y - world.camera.y);
-    world.aimAngle = Math.atan2(input.mouseY - sy, input.mouseX - sx);
-    updateWorld(world, input, dt);
-    // Minimap size + mute are live keys.
-    if (input.wasPressed('minimap')) world.settings.minimap = (world.settings.minimap + 1) % 4;
-    if (input.wasPressed('mute')) {
-      world.audio.ensure();
-      world.audio.setMuted(!world.audio.muted);
+  if (input.anyGesture) world.audio.unlock();
+
+  if (screen === 'play') {
+    if (input.hit('p') || input.hit('Escape')) {
+      screen = 'pause';
+      pauseIndex = 0;
+    } else if (world.shopOpen) {
+      screen = 'shop';
+      shopIndex = 0;
+    } else {
+      world.update(dt, input);
+      autosaveTimer += dt;
+      if (autosaveTimer > 30) {
+        autosaveTimer = 0;
+        saveGame(world);
+      }
+      if (world.gameOver || world.win) screen = 'over';
     }
-    if (input.wasPressed('pause')) {
-      world.screen = 'pause';
-      world.audio.ensure();
-      saveGame(world);
+  } else if (screen === 'title') {
+    if (input.hit('ArrowUp') || input.hit('w')) menuIndex = (menuIndex + 3) % 4;
+    if (input.hit('ArrowDown') || input.hit('s')) menuIndex = (menuIndex + 1) % 4;
+    if (input.hit('Enter') || input.hit(' ')) chooseTitle();
+    if (input.mouseClicked) {
+      const my = input.mouseY;
+      const hit = Math.floor((my - canvas.height * 0.52 + 28) / 52);
+      if (hit >= 0 && hit < 4) { menuIndex = hit; chooseTitle(); }
     }
-    if (input.wasPressed('settings')) {
-      returnScreen = 'pause';
-      world.screen = 'settings';
+  } else if (screen === 'howto') {
+    if (input.hit('Escape') || input.hit('Enter')) screen = returnTo;
+  } else if (screen === 'settings') {
+    if (input.hit('ArrowUp')) settingsIndex = (settingsIndex + 3) % 4;
+    if (input.hit('ArrowDown')) settingsIndex = (settingsIndex + 1) % 4;
+    if (input.hit('ArrowLeft') || input.hit('ArrowRight')) {
+      const dir = input.hit('ArrowRight') ? 1 : -1;
+      if (settingsIndex === 0) settings.volume = Math.max(0, Math.min(1, settings.volume + dir * 0.1));
+      if (settingsIndex === 1) settings.music = !settings.music;
+      if (settingsIndex === 2) settings.minimap = (settings.minimap + dir + 3) % 3;
+      if (settingsIndex === 3) settings.quality = settings.quality === 'high' ? 'low' : 'high';
+      applySettings();
+    }
+    if (input.hit('m')) { settings.music = !settings.music; applySettings(); }
+    if (input.hit('Escape') || input.hit('Enter')) {
+      saveSettings(settings);
+      screen = returnTo;
+    }
+  } else if (screen === 'pause') {
+    if (input.hit('ArrowUp') || input.hit('w')) pauseIndex = (pauseIndex + 3) % 4;
+    if (input.hit('ArrowDown') || input.hit('s')) pauseIndex = (pauseIndex + 1) % 4;
+    if (input.hit('p') || input.hit('Escape')) screen = 'play';
+    if (input.hit('Enter') || input.hit(' ')) {
+      if (pauseIndex === 0) screen = 'play';
+      else if (pauseIndex === 1) { returnTo = 'pause'; screen = 'howto'; }
+      else if (pauseIndex === 2) openSettings('pause');
+      else if (pauseIndex === 3) {
+        saveGame(world);
+        screen = 'title';
+        menuIndex = 0;
+      }
+    }
+  } else if (screen === 'shop') {
+    const items = shopItems(world.shopOpen, world);
+    if (input.hit('ArrowUp') || input.hit('w')) shopIndex = (shopIndex + items.length - 1) % items.length;
+    if (input.hit('ArrowDown') || input.hit('s')) shopIndex = (shopIndex + 1) % items.length;
+    if (input.hit('Enter') || input.hit(' ')) world.buyItem(items[shopIndex].id);
+    if (input.hit('f') || input.hit('Escape')) {
+      world.shopOpen = null;
+      screen = 'play';
+    }
+  } else if (screen === 'over') {
+    if (input.hit('Enter') || input.hit(' ')) {
+      screen = 'title';
+      menuIndex = 0;
     }
   }
 
-  render(ctx, world, input);
+  // ---- render -----------------------------------------------------------
+  if (screen === 'title') {
+    drawTitle(ctx, canvas.width, canvas.height, menuIndex);
+  } else if (screen === 'howto') {
+    drawHowTo(ctx, canvas.width, canvas.height);
+  } else if (screen === 'settings') {
+    drawSettings(ctx, canvas.width, canvas.height, settings, settingsIndex);
+  } else if (screen === 'shop') {
+    drawWorld(ctx, world, canvas.width, canvas.height);
+    drawHUD(ctx, world, canvas.width, canvas.height);
+    drawShop(ctx, world, canvas.width, canvas.height, shopIndex);
+  } else if (screen === 'pause') {
+    drawWorld(ctx, world, canvas.width, canvas.height);
+    drawHUD(ctx, world, canvas.width, canvas.height);
+    drawPause(ctx, canvas.width, canvas.height, pauseIndex);
+  } else if (screen === 'over') {
+    drawWorld(ctx, world, canvas.width, canvas.height);
+    drawGameOver(ctx, canvas.width, canvas.height, world.win, world.stats);
+  } else {
+    drawWorld(ctx, world, canvas.width, canvas.height);
+    drawHUD(ctx, world, canvas.width, canvas.height);
+  }
+
   input.endFrame();
+
+  // ---- screenshot staging ----------------------------------------------
+  if (shotName && !shotStaged) {
+    shotStaged = true;
+    const mode = stageShot(world, shotName);
+    screen = mode;
+    if (mode === 'play') {
+      // Let traffic and particles settle a few frames before signalling.
+      shotFrames = 0;
+      const settle = () => {
+        world.update(1 / 60, input);
+        drawWorld(ctx, world, canvas.width, canvas.height);
+        drawHUD(ctx, world, canvas.width, canvas.height);
+        input.endFrame();
+        shotFrames++;
+        if (shotFrames >= 12) {
+          window.__shotReady = true;
+          requestAnimationFrame(frame); // resume the normal loop
+        } else requestAnimationFrame(settle);
+      };
+      requestAnimationFrame(settle);
+      return; // the settle loop hands control back to rAF below
+    }
+    window.__shotReady = true;
+  } else if (shotName && shotStaged && screen === 'play') {
+    // Normal play loop continues after staging; __shotReady already set.
+  }
   requestAnimationFrame(frame);
 }
 
-function handleScreens(dt) {
-  const s = world.screen;
-  if (s === 'title') {
-    if (input.wasPressed('up')) { world.titleChoice = (world.titleChoice + 3) % 4; world.audio.ensure(); world.audio.blip(600); }
-    if (input.wasPressed('down')) { world.titleChoice = (world.titleChoice + 1) % 4; world.audio.ensure(); world.audio.blip(600); }
-    if (input.wasPressed('confirm') || input.mousePressed) {
-      world.audio.ensure();
-      const choice = world.titleChoice;
-      if (choice === 0) {
-        world.screen = 'play';
-        world.message('Welcome to Solmar, Dana. Mara is waiting at Mercado.', '#e8b81a');
-      } else if (choice === 1) {
-        world.screen = 'howto';
-      } else if (choice === 2) {
-        const data = loadGame();
-        if (data) {
-          applySave(world, data);
-          world.screen = 'play';
-          world.message('Save loaded. Welcome back, Dana.', '#7ae88c');
-        } else {
-          world.screen = 'play';
-        }
-      } else {
-        returnScreen = 'title';
-        world.screen = 'settings';
-      }
+function chooseTitle() {
+  if (menuIndex === 0) startNewGame();
+  else if (menuIndex === 1) { returnTo = 'title'; screen = 'howto'; }
+  else if (menuIndex === 2) {
+    const data = loadGame();
+    if (data) {
+      applySave(data);
+      screen = 'play';
+      world.addToast('Welcome back to Solmar.');
+    } else {
+      world.addToast('No save yet — starting a new game.');
+      startNewGame();
     }
-    return;
-  }
-  if (s === 'howto') {
-    if (input.wasPressed('confirm') || input.wasPressed('escape')) world.screen = 'title';
-    return;
-  }
-  if (s === 'settings') {
-    if (input.wasPressed('confirm') || input.wasPressed('escape')) world.screen = returnScreen;
-    return;
-  }
-  if (s === 'pause') {
-    if (input.wasPressed('pause')) world.screen = 'play';
-    else if (input.wasPressed('escape')) { world.screen = 'title'; world.titleChoice = 0; }
-    else if (input.wasPressed('confirm')) {
-      if (saveGame(world)) world.message('Game saved.', '#7ae88c');
-    } else if (input.wasPressed('settings')) {
-      returnScreen = 'pause';
-      world.screen = 'settings';
-    }
-    return;
-  }
-  if (s === 'gameover') {
-    world.gameOverTimer += dt;
-    if (world.gameOverTimer > 0.8 && input.wasPressed('confirm')) {
-      const p = world.player;
-      p.dead = false;
-      p.hp = 100;
-      p.money = Math.max(0, p.money - 200);
-      p.x = 720; p.y = 2640; // clinic next to Rosa's Diner
-      if (p.inCar) { p.inCar.driver = 'parked'; p.inCar = null; }
-      world.wanted.stars = 0;
-      world.wanted.state = 'none';
-      world.wanted.heat = 0;
-      world.cops = [];
-      world.heli.active = false;
-      world.screen = 'play';
-      world.message('Patched up at the clinic. $200 lighter.', '#e8b81a');
-    }
-    return;
-  }
-  void dt;
+  } else if (menuIndex === 3) openSettings('title');
 }
 
+function applySettings() {
+  world.audio.setVolume(settings.volume);
+  world.audio.musicOn = settings.music;
+  world.minimapSize = settings.minimap;
+  saveSettings(settings);
+}
+
+// Resize the canvas to the window while keeping the 1280x720 playfield.
+function fitCanvas() {
+  const scale = Math.min(window.innerWidth / 1280, window.innerHeight / 720);
+  canvas.style.width = `${Math.floor(1280 * scale)}px`;
+  canvas.style.height = `${Math.floor(720 * scale)}px`;
+}
+window.addEventListener('resize', fitCanvas);
+fitCanvas();
+
+// If there is a save, the title screen's Continue is live; otherwise it
+// starts a new game (chooseTitle handles both).
+void hasSave;
 requestAnimationFrame(frame);
