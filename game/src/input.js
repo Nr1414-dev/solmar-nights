@@ -8,6 +8,8 @@ export const ACTION_ENTER_CAR = 4;
 export const ACTION_ATTACK = 8;
 export const ACTION_HORN = 16;
 export const ACTION_INTERACT = 32;
+export const ACTION_SETTINGS = 64;
+export const ACTION_MINIMAP = 128;
 
 const KEYMAP = {
   KeyW: 'up', ArrowUp: 'up',
@@ -20,6 +22,8 @@ const KEYMAP = {
   KeyF: 'interact', KeyV: 'interact',
   KeyQ: 'horn',
   KeyM: 'mute',
+  KeyO: 'settings',
+  KeyN: 'minimap',
   KeyP: 'pause', Escape: 'pause',
   Enter: 'confirm',
 };
@@ -93,6 +97,8 @@ export function createInput(canvas) {
       if (pressed.has('attack')) a |= ACTION_ATTACK;
       if (pressed.has('interact')) a |= ACTION_INTERACT;
       if (pressed.has('horn')) a |= ACTION_HORN;
+      if (pressed.has('settings')) a |= ACTION_SETTINGS;
+      if (pressed.has('minimap')) a |= ACTION_MINIMAP;
       pressed.clear();
       if (mouse.clicked) {
         a |= ACTION_ATTACK;

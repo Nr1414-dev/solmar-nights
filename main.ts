@@ -18,6 +18,7 @@ import { buildDossier } from './vendor/makefun-game.ts';
 const here = fileURLToPath(new URL('.', import.meta.url));
 // The grader hands the entry /output; a local run takes MAKEFUN_OUTPUT_DIR.
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const VERSION = '2.2';
 
 function fail(message: string): never {
   throw new Error(`SOLMAR NIGHTS build: ${message}`);
@@ -27,9 +28,9 @@ function requireFile(path: string, why: string): void {
   if (!existsSync(path) || !statSync(path).isFile()) fail(`missing ${path} — ${why}`);
 }
 
-// Pre-flight: the v2 systems the entry promises must be in the tree before
+// Pre-flight: the v2.2 systems the entry promises must be in the tree before
 // anything is copied, so a half-built checkout fails loudly here instead of
-// handing in a game without its bikes, hit squads or favicon.
+// handing in a game without its settings, helicopter, fog or seventh job.
 const REQUIRED = [
   ['game/index.html', 'the playable page'],
   ['game/favicon.svg', 'the v2 favicon (linked from index.html)'],
@@ -42,6 +43,24 @@ for (const [rel, why] of REQUIRED) requireFile(join(here, rel), why);
 // The favicon must actually be wired: a file nobody links is dead weight.
 const indexHtml = readFileSync(join(here, 'game/index.html'), 'utf8');
 if (!indexHtml.includes('favicon.svg')) fail('game/index.html does not link game/favicon.svg');
+
+// Pre-flight for v2.2: the systems the entry promises must be in the tree
+// before anything is copied — the settings screen, the police helicopter,
+// the fog, the courier van and the seventh job. A checkout that lost any
+// of them fails loudly here instead of handing in a game without them.
+function requireText(path: string, needle: string, why: string): void {
+  const text = readFileSync(join(here, path), 'utf8');
+  if (!text.includes(needle)) fail(`${path} is missing ${why} (no ${JSON.stringify(needle)})`);
+}
+requireText('game/src/main.js', 'SCREEN_SETTINGS', 'the v2.2 settings screen');
+requireText('game/src/save.js', 'readSettings', 'the v2.2 settings store');
+requireText('game/src/world.js', 'updateHeli', 'the v2.2 police helicopter');
+requireText('game/src/world.js', "w.state = 'fog'", 'the v2.2 fog weather');
+requireText('game/src/missions.js', 'last-delivery', 'the v2.2 seventh job');
+requireText('game/src/config.js', 'delivery', 'the v2.2 courier van');
+requireText('game/src/render.js', 'drawHeli', 'the v2.2 helicopter drawing');
+requireText('game/src/gangs.js', 'enforcer', 'the v2.2 Salt Kings Enforcer');
+requireText('game/src/audio.js', 'setVolumes', 'the v2.2 volume controls');
 
 // Screenshots: 3 or 4, each inside the gate's 256 KiB cap, before the
 // dossier is built from them.
@@ -91,5 +110,5 @@ writeFileSync(join(out, 'dossier.json'), dossier);
 // Build stamp: what went in and how close the dossier text sits to its cap.
 const gameFiles = countFiles(join(out, 'game'));
 const textBytes = new TextEncoder().encode(JSON.parse(new TextDecoder().decode(dossier)).text).length;
-console.log(`SOLMAR NIGHTS v2 — ${gameFiles} game files, ${shotNames.length} screenshots`);
+console.log(`SOLMAR NIGHTS v${VERSION} — ${gameFiles} game files, ${shotNames.length} screenshots`);
 console.log(`Wrote ${join(out, 'dossier.json')} (${dossier.length} bytes, text ${textBytes} / 163840 bytes)`);

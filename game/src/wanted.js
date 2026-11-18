@@ -29,7 +29,26 @@ export function createWanted() {
     // Where the police last saw the player: when they lose sight they
     // search this spot instead of homing in on the player perfectly.
     lastKnown: null,
+    // How long the player has stayed under cover (off the road) while the
+    // helicopter is up: six seconds of cover shakes the heli off.
+    heliHidden: 0,
   };
+}
+
+/** A one-word read on the heat, for the HUD under the stars. */
+export function wantedLabel(stars) {
+  return ['CLEAN', 'SUSPECT', 'WANTED', 'DANGEROUS', 'MOST WANTED', 'CITYWIDE MANHUNT'][stars] ?? 'CLEAN';
+}
+
+/** The helicopter's spotlight: it only holds the player while the player
+ *  is out in the open — on a road, in the spotlight's circle. Duck off the
+ *  road between the buildings and the heli is blind. */
+export function heliSeesPlayer(G) {
+  const heli = G.heli;
+  if (!heli?.active) return false;
+  const p = G.player;
+  if (Math.hypot(heli.x - p.x, heli.y - p.y) > WANTED.HELI_SPOT_RADIUS) return false;
+  return isOnRoad(p.x, p.y);
 }
 
 /** A pedestrian close enough to see the crime. */
@@ -99,6 +118,27 @@ export function updateWanted(G, dt) {
       if (!c.dead && Math.hypot(c.x - p.x, c.y - p.y) < WANTED.SIGHT_RANGE && hasLineOfSight(G, c.x, c.y, p.x, p.y)) { seen = true; break; }
     }
   }
+  // The helicopter's spotlight is its own pair of eyes: it pins the player
+  // while they are out in the open, and it alone can hold the chase hot
+  // when every patrol has lost sight.
+  if (!seen && heliSeesPlayer(G)) seen = true;
+  // Under cover while the heli is up, the clock runs the other way: six
+  // seconds off the road and the heli gives up the search, taking a star
+  // of heat with it.
+  if (G.heli?.active) {
+    if (!isOnRoad(p.x, p.y)) {
+      w.heliHidden += dt;
+      if (w.heliHidden >= WANTED.HELI_COVER_SECONDS) {
+        w.heliHidden = 0;
+        G.heli.active = false;
+        G.stats.heliEscapes++;
+        w.heat = Math.max(0, w.heat - 25);
+        w.stars = wantedStars(w);
+        G.banner = { title: 'HELI LOST YOU', sub: 'Under cover, out of the spotlight — the helicopter broke off.', t: 0, dur: 3 };
+        G.saveNeeded = true;
+      }
+    } else w.heliHidden = 0;
+  }
   w.seen = seen;
   if (seen) {
     w.hiddenTimer = 0;
@@ -130,4 +170,6 @@ export function clearWanted(G) {
   G.wanted.hiddenTimer = 0;
   G.wanted.seen = false;
   G.wanted.lastKnown = null;
+  G.wanted.heliHidden = 0;
+  if (G.heli) G.heli.active = false;
 }

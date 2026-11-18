@@ -8,15 +8,18 @@
 // that scene instead of running the loop, paints it twice and sets
 // window.__shotReady for a screenshot.
 
-import { ECONOMY, MAX_FRAME, STEP } from './config.js';
+import { ECONOMY, MAX_FRAME, MINIMAP_ORDER, STEP } from './config.js';
 import { createRandom } from './random.js';
+// save.js loads before world.js on purpose: the dossier lists sources in
+// load order and the text is capped, so the settings store (and the
+// screenshot staging below) come before the two biggest files.
+import { readSave, readSettings, saveBest, writeSave, writeSettings } from './save.js';
 import { createWorld, updateWorld } from './world.js';
-import { ACTION_ATTACK, ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
+import { ACTION_ATTACK, ACTION_CONFIRM, ACTION_PAUSE, ACTION_SETTINGS, createInput } from './input.js';
 import { createAudio } from './audio.js';
-import { createRenderer, SCREEN_ENDING, SCREEN_HOWTO, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
-import { readSave, saveBest, writeSave } from './save.js';
+import { createRenderer, SCREEN_ENDING, SCREEN_HOWTO, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_SETTINGS, SCREEN_TITLE } from './render.js';
 import { stageShot } from './shots.js';
-import { startMission } from './missions.js';
+import { MISSIONS, startMission } from './missions.js';
 
 const params = new URLSearchParams(window.location.search);
 const shot = params.get('shot');
@@ -30,9 +33,12 @@ const renderer = createRenderer(canvas);
 const input = createInput(canvas);
 
 let save = readSave();
-let world = createWorld(seed, null);
+let settings = readSettings();
+audio.setVolumes(settings.music, settings.sfx);
+let world = createWorld(seed, null, settings);
 let screen = SCREEN_TITLE;
 let selected = 0;
+let settingsReturn = SCREEN_TITLE;
 let overKind = 'wasted';
 let overSub = '';
 let muteLatch = false;
@@ -42,17 +48,29 @@ function announce(message) {
 }
 
 function titleItems() {
-  return save ? ['CONTINUE', 'NEW GAME', 'HOW TO PLAY'] : ['NEW GAME', 'HOW TO PLAY'];
+  return save
+    ? ['CONTINUE', 'NEW GAME', 'HOW TO PLAY', 'SETTINGS']
+    : ['NEW GAME', 'HOW TO PLAY', 'SETTINGS'];
+}
+
+function pauseItems() {
+  return ['RESUME', 'RESTART CURRENT JOB', 'SETTINGS', 'SAVE & QUIT TO TITLE', audio.isMuted() ? 'SOUND: OFF' : 'SOUND: ON'];
+}
+
+function applySettings() {
+  audio.setVolumes(settings.music, settings.sfx);
+  writeSettings(settings);
+  world.settings = { ...settings };
 }
 
 function startGame(continueSave) {
   const data = continueSave ? save : null;
-  world = createWorld(seed, data);
+  world = createWorld(seed, data, settings);
   screen = SCREEN_PLAY;
   selected = 0;
   audio.unlock();
   if (continueSave) {
-    world.toast = { text: `Welcome back, Dana. ${world.missionIndex < 6 ? 'Mara has work at the safehouse.' : 'The city is yours.'}`, t: 0, dur: 5 };
+    world.toast = { text: `Welcome back, Dana. ${world.missionIndex < MISSIONS.length ? 'Mara has work at the safehouse.' : 'The city is yours.'}`, t: 0, dur: 5 };
   } else {
     world.banner = {
       title: 'SOLMAR NIGHTS',
@@ -83,6 +101,7 @@ function handleTitle() {
     if (choice === 'CONTINUE') startGame(true);
     else if (choice === 'NEW GAME') startGame(false);
     else if (choice === 'HOW TO PLAY') { screen = SCREEN_HOWTO; selected = 0; }
+    else if (choice === 'SETTINGS') { settingsReturn = SCREEN_TITLE; screen = SCREEN_SETTINGS; selected = 0; }
   }
 }
 
@@ -97,7 +116,7 @@ function handleHowTo() {
 function handlePaused() {
   const actions = input.takeActions();
   const axes = input.axes();
-  const items = ['RESUME', 'RESTART CURRENT JOB', 'SAVE & QUIT TO TITLE', audio.isMuted() ? 'SOUND: OFF' : 'SOUND: ON'];
+  const items = pauseItems();
   if (axes.y < 0) selected = (selected + items.length - 1) % items.length;
   else if (axes.y > 0) selected = (selected + 1) % items.length;
   if (actions & ACTION_PAUSE) {
@@ -114,6 +133,10 @@ function handlePaused() {
       startMission(world, idx);
     }
     screen = SCREEN_PLAY;
+  } else if (choice === 'SETTINGS') {
+    settingsReturn = SCREEN_PAUSED;
+    screen = SCREEN_SETTINGS;
+    selected = 0;
   } else if (choice === 'SAVE & QUIT TO TITLE') {
     writeSave(world);
     save = readSave();
@@ -121,6 +144,55 @@ function handlePaused() {
     selected = 0;
   } else if (choice.startsWith('SOUND')) {
     audio.setMuted(!audio.isMuted());
+  }
+}
+
+/** The Settings screen: six rows, arrows adjust, Enter on BACK leaves.
+ *  Every change applies live and is written to localStorage at once. */
+let prevSetX = 0;
+function handleSettings() {
+  const actions = input.takeActions();
+  const axes = input.axes();
+  const rows = 6;
+  if (axes.y < 0) selected = (selected + rows - 1) % rows;
+  else if (axes.y > 0) selected = (selected + 1) % rows;
+  const stepVol = (v, d) => Math.round(Math.max(0, Math.min(1, v + d)) * 100) / 100;
+  // Left/right adjust once per press, not once per frame: holding the key
+  // would otherwise run a volume from 0 to 100 in under a second.
+  const xEdge = axes.x !== 0 && prevSetX === 0 ? axes.x : 0;
+  prevSetX = axes.x;
+  if (xEdge !== 0) {
+    if (selected === 0) settings.music = stepVol(settings.music, xEdge * 0.1);
+    else if (selected === 1) settings.sfx = stepVol(settings.sfx, xEdge * 0.1);
+    else if (selected === 2) {
+      const order = MINIMAP_ORDER;
+      const i = order.indexOf(settings.minimap);
+      settings.minimap = order[(i + xEdge + order.length) % order.length];
+    } else if (selected === 3) settings.shake = !settings.shake;
+    else if (selected === 4) settings.hints = !settings.hints;
+    applySettings();
+    audio.click();
+  }
+  if (actions & ACTION_CONFIRM) {
+    if (selected === 5) {
+      screen = settingsReturn;
+      selected = 0;
+      return;
+    }
+    // Enter on a row adjusts it the same way right-arrow does.
+    if (selected === 0) settings.music = stepVol(settings.music, 0.1);
+    else if (selected === 1) settings.sfx = stepVol(settings.sfx, 0.1);
+    else if (selected === 2) {
+      const order = MINIMAP_ORDER;
+      settings.minimap = order[(order.indexOf(settings.minimap) + 1) % order.length];
+    } else if (selected === 3) settings.shake = !settings.shake;
+    else if (selected === 4) settings.hints = !settings.hints;
+    applySettings();
+    audio.click();
+  }
+  if (actions & ACTION_SETTINGS) {
+    screen = settingsReturn;
+    selected = 0;
   }
 }
 
@@ -169,7 +241,9 @@ function runShot(name) {
   const scene = stageShot(name, world, audio);
   let painted = 0;
   function paint() {
-    renderer.draw(world, scene.screen, input, { selected: 0, saveExists: !!save, muted: false });
+    // The title shot is a real title screen: the same menu rows the
+    // player sees, Settings included.
+    renderer.draw(world, scene.screen, input, { selected: 0, saveExists: !!save, muted: false, items: titleItems(), settings });
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
@@ -195,6 +269,7 @@ function runGame() {
     if (screen === SCREEN_TITLE) handleTitle();
     else if (screen === SCREEN_HOWTO) handleHowTo();
     else if (screen === SCREEN_PAUSED) handlePaused();
+    else if (screen === SCREEN_SETTINGS) handleSettings();
     else if (screen === SCREEN_OVER) handleOver();
     else if (screen === SCREEN_ENDING) handleEnding();
     else if (screen === SCREEN_PLAY) {
@@ -203,7 +278,12 @@ function runGame() {
       const view = renderer.getView();
       input.mouse.lx = (input.mouse.x - view.ox) / view.scale;
       input.mouse.ly = (input.mouse.y - view.oy) / view.scale;
-      if (actions & ACTION_PAUSE) {
+      if (actions & ACTION_SETTINGS) {
+        settingsReturn = SCREEN_PLAY;
+        screen = SCREEN_SETTINGS;
+        selected = 0;
+        announce('Settings.');
+      } else if (actions & ACTION_PAUSE) {
         screen = SCREEN_PAUSED;
         selected = 0;
         announce('Paused.');
@@ -233,6 +313,11 @@ function runGame() {
           writeSave(world);
           save = readSave();
         }
+        if (world.settingsDirty) {
+          world.settingsDirty = false;
+          settings = { ...world.settings };
+          writeSettings(settings);
+        }
       }
       if (screen === SCREEN_PLAY && accumulator >= STEP) accumulator = 0;
     }
@@ -243,6 +328,8 @@ function runGame() {
       muted: audio.isMuted(),
       kind: overKind,
       sub: overSub,
+      items: screen === SCREEN_TITLE ? titleItems() : screen === SCREEN_PAUSED ? pauseItems() : undefined,
+      settings,
     };
     renderer.draw(world, screen, input, ui);
   }

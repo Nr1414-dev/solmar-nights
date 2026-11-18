@@ -5,7 +5,8 @@
 // marker and fail condition. Side work (taxi fares, hidden packages) lives
 // in world.js; this file is only the story chain.
 
-import { LANDMARKS, districtNameAt } from './city.js';
+import { LANDMARKS, districtNameAt, landmarkByKind } from './city.js';
+import { ECONOMY } from './config.js';
 import { clamp } from './random.js';
 
 const RACE_POINTS = [
@@ -15,6 +16,12 @@ const RACE_POINTS = [
   { x: 960, y: 3360 },
   { x: 480, y: 1920 },
   { x: 1920, y: 480 },
+];
+
+const DELIVERY_DROPS = [
+  { x: 300, y: 1680, name: 'Marina Pier' },
+  { x: 2160, y: 700, name: 'Neon Arcade' },
+  { x: 3360, y: 3360, name: 'Old Town' },
 ];
 
 const COLLECT_SPOTS = [
@@ -243,6 +250,91 @@ export const MISSIONS = [
       const m = G.mission;
       if (m.phase === 2) return { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y };
       return { x: LANDMARKS.bank.x, y: LANDMARKS.bank.y };
+    },
+  },
+  {
+    id: 'last-delivery',
+    title: 'The Last Delivery',
+    giver: 'Mara Solis',
+    brief: 'The Courier Depot has a van loaded with three parcels for the far corners of Solmar — Marina Pier, the Neon Arcade and Old Town. Take the van, run all three drops in 180 seconds, then bring the van home to the safehouse. The van is slow, the city is wide, and the clock is the enemy.',
+    reward: 2500,
+    start(G) {
+      G.mission.phase = 0;
+      G.mission.data.drops = 0;
+      G.mission.data.hold = 0;
+      G.mission.timer = 180;
+      // The job's van waits at the depot; if the player already took it
+      // (or wrecked it) on a previous attempt, park a fresh one.
+      const depot = landmarkByKind('depot') ?? LANDMARKS.depot;
+      const near = G.cars.some((c) => !c.dead && c.typeKey === 'delivery' && Math.hypot(c.x - depot.x, c.y - depot.y) < 400);
+      if (!near) {
+        const van = {
+          x: depot.x, y: depot.y - 120, angle: Math.PI / 2, vx: 0, vy: 0, speed: 0, slip: 0,
+          type: { ...G.types.delivery }, typeKey: 'delivery',
+          color: '#f39c12', hp: G.types.delivery.hp, maxHp: G.types.delivery.hp,
+          ai: 'parked', driver: null, dead: false, dir: 0, target: null, brakeTimer: 0, shootCd: 0,
+        };
+        G.cars.push(van);
+      }
+    },
+    update(G, dt) {
+      const m = G.mission;
+      const van = G.player.inCar?.typeKey === 'delivery' ? G.player.inCar : null;
+      if (m.phase === 0) {
+        if (van) {
+          m.phase = 1;
+          G.toast = { text: 'Van secured. Three drops, 180 seconds — move!', t: 0, dur: 4 };
+        }
+        return 'active';
+      }
+      m.timer -= dt;
+      if (m.timer <= 0) return 'fail';
+      if (m.phase === 1) {
+        const drop = DELIVERY_DROPS[m.data.drops];
+        if (!drop) { m.phase = 2; return 'active'; }
+        if (!van) {
+          G.toast = { text: 'The parcels are in the van — get back in it!', t: 0, dur: 2 };
+          return 'active';
+        }
+        const d = Math.hypot(G.player.x - drop.x, G.player.y - drop.y);
+        if (d < 110) {
+          m.data.hold += dt;
+          if (m.data.hold > 1) {
+            m.data.hold = 0;
+            m.data.drops++;
+            G.player.cash += ECONOMY.PARCEL_BONUS;
+            G.stats.parcels++;
+            G.audio?.cash();
+            G.toast = { text: `Parcel ${m.data.drops} of ${DELIVERY_DROPS.length} delivered (+$${ECONOMY.PARCEL_BONUS})`, t: 0, dur: 3 };
+            if (m.data.drops >= DELIVERY_DROPS.length) m.phase = 2;
+          }
+        } else m.data.hold = 0;
+      } else {
+        const d = Math.hypot(G.player.x - LANDMARKS.safehouse.x, G.player.y - LANDMARKS.safehouse.y);
+        if (d < 110 && van) return 'done';
+      }
+      return 'active';
+    },
+    objective(G) {
+      const m = G.mission;
+      if (m.phase === 0) return 'Take the courier van at the Solmar Courier Depot';
+      if (m.phase === 1) {
+        const drop = DELIVERY_DROPS[m.data.drops];
+        return `Deliver parcel ${m.data.drops + 1} of ${DELIVERY_DROPS.length} to ${drop.name} — ${Math.max(0, Math.ceil(m.timer))}s left`;
+      }
+      return `All parcels delivered — bring the van home to the safehouse (${Math.max(0, Math.ceil(m.timer))}s)`;
+    },
+    target(G) {
+      const m = G.mission;
+      if (m.phase === 0) {
+        const depot = landmarkByKind('depot') ?? LANDMARKS.depot;
+        return { x: depot.x, y: depot.y };
+      }
+      if (m.phase === 1) {
+        const drop = DELIVERY_DROPS[m.data.drops];
+        return drop ? { x: drop.x, y: drop.y } : { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y };
+      }
+      return { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y };
     },
   },
 ];

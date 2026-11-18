@@ -11,4 +11,12 @@
   <rect x="10" y="36" width="44" height="3" fill="#14101f" opacity="0.85"/>
   <rect x="10" y="43" width="44" height="3" fill="#14101f" opacity="0.6"/>
   <text x="32" y="31" font-family="system-ui, sans-serif" font-size="17" font-weight="bold" fill="#14101f" text-anchor="middle">S</text>
+  <!-- v2.2: the police helicopter that joins the chase at four stars. -->
+  <g fill="#14101f">
+    <ellipse cx="46" cy="13" rx="7" ry="3.5"/>
+    <rect x="38" y="11.5" width="5" height="2" rx="1"/>
+    <rect x="52" y="12" width="6" height="1.6" rx="0.8"/>
+  </g>
+  <rect x="38" y="8.6" width="16" height="1.4" rx="0.7" fill="#14101f"/>
+  <circle cx="46" cy="13" r="1.2" fill="#ff2e2e"/>
 </svg>

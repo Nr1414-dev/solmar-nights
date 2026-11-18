@@ -3,7 +3,44 @@
 // state — cash, ammo, the next job, the hidden packages found — and nothing
 // else. A private window simply keeps the run for the visit.
 
-import { BEST_KEY, SAVE_KEY } from './config.js';
+import { BEST_KEY, DEFAULT_SETTINGS, MINIMAP_ORDER, SAVE_KEY, SETTINGS_KEY } from './config.js';
+
+/** The player's settings, merged over the defaults and clamped: a stored
+ *  value from an older build (or a hand-edited one) can never break the
+ *  game — an unknown minimap size falls back to medium, a wild volume to
+ *  its nearest edge. */
+export function readSettings() {
+  const out = { ...DEFAULT_SETTINGS };
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return out;
+    const data = JSON.parse(raw);
+    if (!data || typeof data !== 'object') return out;
+    if (typeof data.music === 'number') out.music = Math.max(0, Math.min(1, data.music));
+    if (typeof data.sfx === 'number') out.sfx = Math.max(0, Math.min(1, data.sfx));
+    if (MINIMAP_ORDER.includes(data.minimap)) out.minimap = data.minimap;
+    if (typeof data.shake === 'boolean') out.shake = data.shake;
+    if (typeof data.hints === 'boolean') out.hints = data.hints;
+  } catch {
+    // Corrupt settings are forgotten, not fatal.
+  }
+  return out;
+}
+
+export function writeSettings(settings) {
+  try {
+    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      music: settings.music,
+      sfx: settings.sfx,
+      minimap: settings.minimap,
+      shake: settings.shake,
+      hints: settings.hints,
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function readSave() {
   try {

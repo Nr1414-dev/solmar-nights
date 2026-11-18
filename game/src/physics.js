@@ -132,3 +132,40 @@ export function aheadBlocked(city, car, d) {
   const y = car.y + Math.sin(car.angle) * d;
   return circleBlocked(city, x, y, 10);
 }
+
+/** Turn `current` toward `target` by at most `maxStep` radians. */
+export function turnToward(current, target, maxStep) {
+  let d = (target - current) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return current + clamp(d, -maxStep, maxStep);
+}
+
+/**
+ * One step for the police helicopter. It does not drive the road grid — it
+ * flies straight at a point on its orbit circle around the target, banking
+ * into the turn, so it circles overhead instead of hovering on top of the
+ * player. `heli` keeps x, y, angle, speed and wobble; `radius` is the orbit.
+ */
+export function heliStep(heli, tx, ty, dt, speed, radius, wobble) {
+  const dx = tx - heli.x;
+  const dy = ty - heli.y;
+  const d = Math.hypot(dx, dy) || 1;
+  // Aim at the near side of the orbit circle, not at the player: that is
+  // what makes it circle instead of parking overhead.
+  const orbitAngle = Math.atan2(heli.y - ty, heli.x - tx) + 0.55;
+  const ox = tx + Math.cos(orbitAngle) * radius;
+  const oy = ty + Math.sin(orbitAngle) * radius;
+  const want = Math.atan2(oy - heli.y, ox - heli.x);
+  heli.angle = turnToward(heli.angle, want, 2.4 * dt);
+  heli.speed = Math.min(speed, heli.speed + 220 * dt);
+  const wob = wobble ?? 0;
+  heli.x += (Math.cos(heli.angle) * heli.speed + wob * 14) * dt;
+  heli.y += (Math.sin(heli.angle) * heli.speed + wob * 10) * dt;
+  // Far out, it closes straight in; on the circle it holds the orbit.
+  if (d > radius * 1.6) {
+    heli.x += (dx / d) * speed * 0.35 * dt;
+    heli.y += (dy / d) * speed * 0.35 * dt;
+  }
+  return heli;
+}

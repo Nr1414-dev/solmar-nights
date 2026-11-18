@@ -8,14 +8,19 @@ export function createAudio() {
   let ctx = null;
   let master = null;
   let musicGain = null;
+  let sfxGain = null;
   let engineOsc = null;
   let engineGain = null;
   let sirenOsc = null;
   let sirenGain = null;
   let sirenLfo = null;
+  let rotorSrc = null;
+  let rotorGain = null;
   let muted = false;
   let musicTimer = null;
   let step = 0;
+  let musicVol = 0.16;
+  let sfxVol = 0.5;
 
   function ensure() {
     if (ctx) return true;
@@ -26,11 +31,17 @@ export function createAudio() {
       master.gain.value = 0.5;
       master.connect(ctx.destination);
       musicGain = ctx.createGain();
-      musicGain.gain.value = 0.16;
+      musicGain.gain.value = musicVol;
       musicGain.connect(master);
+      // One effects bus: every blip, crash and horn runs through it, so
+      // the Settings screen can turn the effects down without touching the
+      // radio. The engine and siren live on it too.
+      sfxGain = ctx.createGain();
+      sfxGain.gain.value = sfxVol;
+      sfxGain.connect(master);
       engineGain = ctx.createGain();
       engineGain.gain.value = 0;
-      engineGain.connect(master);
+      engineGain.connect(sfxGain);
       engineOsc = ctx.createOscillator();
       engineOsc.type = 'sawtooth';
       engineOsc.frequency.value = 60;
@@ -42,7 +53,7 @@ export function createAudio() {
       engineOsc.start();
       sirenGain = ctx.createGain();
       sirenGain.gain.value = 0;
-      sirenGain.connect(master);
+      sirenGain.connect(sfxGain);
       sirenOsc = ctx.createOscillator();
       sirenOsc.type = 'triangle';
       sirenOsc.frequency.value = 750;
@@ -63,7 +74,7 @@ export function createAudio() {
     return true;
   }
 
-  function blip(freq, dur, type, vol, slideTo) {
+  function blip(freq, dur, type, vol, slideTo, dest) {
     if (!ensure() || muted) return;
     const t = ctx.currentTime;
     const o = ctx.createOscillator();
@@ -74,12 +85,14 @@ export function createAudio() {
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     o.connect(g);
-    g.connect(master);
+    // The radio passes its own bus (musicGain); every effect defaults to
+    // the effects bus.
+    g.connect(dest ?? sfxGain ?? master);
     o.start(t);
     o.stop(t + dur + 0.02);
   }
 
-  function noise(dur, vol, filterFreq, type = 'lowpass') {
+  function noise(dur, vol, filterFreq, type = 'lowpass', dest) {
     if (!ensure() || muted) return;
     const t = ctx.currentTime;
     const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
@@ -96,7 +109,7 @@ export function createAudio() {
     g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     src.connect(f);
     f.connect(g);
-    g.connect(master);
+    g.connect(dest ?? sfxGain ?? master);
     src.start(t);
   }
 
@@ -108,10 +121,10 @@ export function createAudio() {
     if (!ctx || muted) return;
     const bar = Math.floor(step / 16) % 4;
     const s = step % 16;
-    if (s % 4 === 0) blip(BASS[bar], 0.5, 'triangle', 0.5, BASS[bar] * 0.99);
-    if (s % 2 === 0) noise(0.03, 0.06, 8000, 'highpass');
-    if (bar % 2 === 0 && s % 4 === 2) blip(LEAD[(step / 4) % 8 | 0] * 2, 0.18, 'square', 0.1);
-    if (s === 0 && bar === 3) blip(196, 0.4, 'sine', 0.25, 98);
+    if (s % 4 === 0) blip(BASS[bar], 0.5, 'triangle', 0.5, BASS[bar] * 0.99, musicGain);
+    if (s % 2 === 0) noise(0.03, 0.06, 8000, 'highpass', musicGain);
+    if (bar % 2 === 0 && s % 4 === 2) blip(LEAD[(step / 4) % 8 | 0] * 2, 0.18, 'square', 0.1, undefined, musicGain);
+    if (s === 0 && bar === 3) blip(196, 0.4, 'sine', 0.25, 98, musicGain);
     step++;
   }
 
@@ -127,6 +140,49 @@ export function createAudio() {
     isMuted() {
       return muted;
     },
+    /** Settings volumes (0..1 each): the radio and the effects separately. */
+    setVolumes(music, sfx) {
+      musicVol = Math.max(0, Math.min(1, music ?? musicVol));
+      sfxVol = Math.max(0, Math.min(1, sfx ?? sfxVol));
+      if (musicGain) musicGain.gain.setTargetAtTime(musicVol, ctx.currentTime, 0.1);
+      if (sfxGain) sfxGain.gain.setTargetAtTime(sfxVol, ctx.currentTime, 0.1);
+    },
+    getVolumes() {
+      return { music: musicVol, sfx: sfxVol };
+    },
+    /** The police helicopter's rotor: a looped noise chop that follows how
+     *  close the heli is (0 = gone, 1 = right overhead). */
+    rotor(intensity) {
+      // No rotor, no sound: never spin up the audio context for silence.
+      if ((!intensity || intensity <= 0) && !rotorSrc) {
+        if (rotorGain) rotorGain.gain.setTargetAtTime(0, ctx.currentTime, 0.2);
+        return;
+      }
+      if (!ensure() || muted) {
+        if (rotorGain) rotorGain.gain.setTargetAtTime(0, ctx.currentTime, 0.2);
+        return;
+      }
+      if (!rotorSrc) {
+        const len = ctx.sampleRate;
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) data[i] = Math.sin((i / len) * Math.PI * 2 * 13) * 0.6 + (Math.random() * 2 - 1) * 0.25;
+        rotorSrc = ctx.createBufferSource();
+        rotorSrc.buffer = buf;
+        rotorSrc.loop = true;
+        const f = ctx.createBiquadFilter();
+        f.type = 'lowpass';
+        f.frequency.value = 320;
+        rotorGain = ctx.createGain();
+        rotorGain.gain.value = 0;
+        rotorSrc.connect(f);
+        f.connect(rotorGain);
+        rotorGain.connect(sfxGain);
+        rotorSrc.start();
+      }
+      rotorGain.gain.setTargetAtTime(0.22 * Math.max(0, Math.min(1, intensity)), ctx.currentTime, 0.25);
+    },
+    click() { blip(740, 0.06, 'sine', 0.25); },
     shoot() { noise(0.12, 0.5, 1800); blip(220, 0.08, 'square', 0.25, 60); },
     punch() { noise(0.09, 0.4, 300); },
     hit() { blip(140, 0.1, 'square', 0.3, 70); },

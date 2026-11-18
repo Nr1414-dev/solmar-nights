@@ -5,10 +5,10 @@
 // side job, shops, pickups, particles and the camera. Missions plug in from
 // missions.js; the wanted rules from wanted.js.
 
-import { DAY_LENGTH, ECONOMY, LANE_OFFSET, PLAYER, VEHICLE_TYPES, WANTED, WEATHER } from './config.js';
+import { DAY_LENGTH, DEFAULT_SETTINGS, ECONOMY, HELI, LANE_OFFSET, MINIMAP_ORDER, PLAYER, VEHICLE_TYPES, WANTED, WEATHER } from './config.js';
 import { LANDMARKS, ROAD_CENTRES, createCity, circleBlocked, districtNameAt, isOnRoad, nearestRoadCentre, nearestRoadPoint, randomSidewalkSpot, resolveCircle } from './city.js';
-import { createRandom, angleDiff, clamp, dist } from './random.js';
-import { aheadBlocked, carRadius, carStep, collideCars } from './physics.js';
+import { createRandom, angleDiff, clamp, dist, gauss } from './random.js';
+import { aheadBlocked, carRadius, carStep, collideCars, heliStep } from './physics.js';
 import { addCrime, clearWanted, createWanted, updateWanted } from './wanted.js';
 import { MISSIONS, missionTarget, startMission, updateMission } from './missions.js';
 import { createGangs, killGangMember, updateGangs } from './gangs.js';
@@ -21,6 +21,7 @@ const CAR_COLORS = {
   pickup: ['#5d6d7e', '#935116', '#2e4053'],
   van: ['#aeb6bf', '#7f8c8d', '#d5dbdb'],
   truck: ['#6e510f', '#5d6d7e', '#922b21'],
+  delivery: ['#e8e8e8', '#f39c12', '#2e86c1'],
 };
 
 function randColor(rng, type) {
@@ -28,7 +29,7 @@ function randColor(rng, type) {
   return list[Math.floor(rng.next() * list.length)];
 }
 
-export function createWorld(seed, save) {
+export function createWorld(seed, save, settings) {
   const city = createCity(seed);
   const rng = createRandom((seed ^ 0x9e3779b9) >>> 0);
   const G = {
@@ -36,6 +37,9 @@ export function createWorld(seed, save) {
     city,
     rng,
     types: VEHICLE_TYPES,
+    // Settings ride along on the world so the renderer (minimap size),
+    // the camera shake and the audio all read the same preferences.
+    settings: { ...DEFAULT_SETTINGS, ...(settings ?? {}) },
     time: 0,
     clock: 0.72, // golden hour: the sun low over the marina
     player: {
@@ -50,7 +54,9 @@ export function createWorld(seed, save) {
     police: [],
     rivals: [],
     gangs: createGangs(),
-    weather: { state: 'clear', timer: 110, rain: 0 },
+    // The police helicopter: grounded until the heat hits four stars.
+    heli: { active: false, x: 0, y: 0, angle: 0, speed: 0, rotor: 0 },
+    weather: { state: 'clear', timer: 110, rain: 0, fog: 0 },
     particles: [],
     skidmarks: [],
     floaters: [],
@@ -59,7 +65,7 @@ export function createWorld(seed, save) {
     mission: { index: save?.missionIndex ?? 0, active: false, phase: 0, data: {}, timer: 0, def: null },
     missionIndex: save?.missionIndex ?? 0,
     missionCooldown: 0,
-    stats: { kills: 0, carsStolen: 0, missionsDone: 0, fares: 0, packages: save?.packages ?? 0, gangKills: 0, wavesCleared: 0 },
+    stats: { kills: 0, carsStolen: 0, missionsDone: 0, fares: 0, packages: save?.packages ?? 0, gangKills: 0, wavesCleared: 0, heliEscapes: 0, parcels: 0 },
     taxi: { state: 'none', passenger: null, dest: null, fare: 0, cooldown: 0 },
     camera: { x: 620, y: 640, zoom: 1, trauma: 0, ox: 0, oy: 0 },
     banner: null,
@@ -125,12 +131,13 @@ function spawnParkedCars(G) {
     [3060, 540, 0, 'sports'], [700, 2100, Math.PI / 2, 'pickup'], [1140, 2580, 0, 'sedan'],
     [2100, 3060, Math.PI / 2, 'truck'], [3060, 2100, 0, 'van'], [1620, 3060, 0, 'sedan'],
     [760, 600, 0, 'bike'], [3060, 600, 0, 'bike'],
+    [3360, 2980, Math.PI / 2, 'delivery'], [1140, 1500, 0, 'delivery'],
   ];
   for (const [x, y, a, t] of spots) spawnCar(G, x, y, a, t, 'parked');
 }
 
 function spawnTraffic(G, n) {
-  const types = ['sedan', 'sedan', 'sedan', 'taxi', 'sports', 'pickup', 'van', 'truck', 'bike'];
+  const types = ['sedan', 'sedan', 'sedan', 'taxi', 'sports', 'pickup', 'van', 'truck', 'bike', 'delivery'];
   for (let i = 0; i < n; i++) {
     const p = randomRoadPoint(G);
     const dir = Math.floor(G.rng.next() * 4);
@@ -179,6 +186,9 @@ function spawnPed(G, anywhere) {
 // ---- effects ----
 
 export function addShake(G, amount) {
+  // Screen shake is a setting: off means the camera never jumps, however
+  // hard the crash.
+  if (G.settings?.shake === false) return;
   G.camera.trauma = clamp(G.camera.trauma + amount, 0, 1);
 }
 
@@ -339,6 +349,14 @@ export function updateWorld(G, input, audio, dt, screen, passedActions) {
     }
   }
 
+  if (actions & 128) { // N: cycle the minimap small -> medium -> large
+    const order = MINIMAP_ORDER;
+    const next = order[(order.indexOf(G.settings.minimap) + 1) % order.length];
+    G.settings.minimap = next;
+    G.toast = { text: `Minimap: ${next}`, t: 0, dur: 2 };
+    G.settingsDirty = true;
+  }
+
   updatePlayer(G, input, actions, axes, mouseWorld, audio, dt);
   updateCars(G, audio, dt);
   updatePeds(G, audio, dt);
@@ -351,6 +369,7 @@ export function updateWorld(G, input, audio, dt, screen, passedActions) {
   updateShops(G, actions, audio, dt);
   updateWanted(G, dt);
   updatePoliceSpawns(G, dt);
+  updateHeli(G, audio, dt);
 
   // Mission lifecycle.
   if (G.mission.active) {
@@ -411,7 +430,7 @@ function updatePlayer(G, input, actions, axes, mouseWorld, audio, dt) {
     const throttle = axes.y < 0 ? 1 : axes.y > 0 ? -1 : 0;
     const steer = axes.x;
     const handbrake = input.down('attack');
-    const gripScale = 1 - (1 - WEATHER.GRIP_WET) * G.weather.rain;
+    const gripScale = wetGrip(G);
     const impact = carStep(car, { throttle, steer, handbrake, gripScale }, dt, G.city);
     if (impact > 90) {
       damageCar(G, car, impact * 0.28);
@@ -866,27 +885,80 @@ function updatePoliceSpawns(G, dt) {
 
 // ---- weather ----
 
-/** Grip multiplier for the rain: 1 on dry roads, 0.75 in a storm. */
+/** Grip multiplier for the weather: 1 on dry roads, 0.75 in a storm, and
+ *  a little less again in fog. */
 function wetGrip(G) {
-  return 1 - (1 - WEATHER.GRIP_WET) * G.weather.rain;
+  return (1 - (1 - WEATHER.GRIP_WET) * G.weather.rain) * (1 - (1 - WEATHER.GRIP_FOG) * G.weather.fog);
 }
 
 /** Storms roll in off the bay every few minutes and pass; the rain level
- *  eases in and out so the roads slick gradually instead of snapping. */
+ *  eases in and out so the roads slick gradually instead of snapping. Fog
+ *  rolls in just as often and lifts the same way — the cycle picks one or
+ *  the other when the sky clears. */
 function updateWeather(G, dt) {
   const w = G.weather;
   w.timer -= dt;
   if (w.state === 'clear' && w.timer <= 0) {
-    w.state = 'storm';
-    w.timer = G.rng.range(WEATHER.STORM_MIN, WEATHER.STORM_MAX);
-    G.toast = { text: 'Storm rolling in off the bay — wet roads, less grip.', t: 0, dur: 4 };
+    if (G.rng.chance(0.45)) {
+      w.state = 'fog';
+      w.timer = G.rng.range(WEATHER.FOG_MIN, WEATHER.FOG_MAX);
+      G.toast = { text: 'Fog rolling in off the bay — visibility down, grip down a touch.', t: 0, dur: 4 };
+    } else {
+      w.state = 'storm';
+      w.timer = G.rng.range(WEATHER.STORM_MIN, WEATHER.STORM_MAX);
+      G.toast = { text: 'Storm rolling in off the bay — wet roads, less grip.', t: 0, dur: 4 };
+    }
   } else if (w.state === 'storm' && w.timer <= 0) {
     w.state = 'clear';
     w.timer = G.rng.range(WEATHER.CLEAR_MIN, WEATHER.CLEAR_MAX);
     G.toast = { text: 'The storm passed. Roads drying out.', t: 0, dur: 3 };
+  } else if (w.state === 'fog' && w.timer <= 0) {
+    w.state = 'clear';
+    w.timer = G.rng.range(WEATHER.CLEAR_MIN, WEATHER.CLEAR_MAX);
+    G.toast = { text: 'The fog lifted. The whole city is visible again.', t: 0, dur: 3 };
   }
-  const target = w.state === 'storm' ? 1 : 0;
-  w.rain += clamp(target - w.rain, -dt * 0.5, dt * 0.5);
+  const rainTarget = w.state === 'storm' ? 1 : 0;
+  w.rain += clamp(rainTarget - w.rain, -dt * 0.5, dt * 0.5);
+  const fogTarget = w.state === 'fog' ? 1 : 0;
+  w.fog += clamp(fogTarget - w.fog, -dt * 0.4, dt * 0.4);
+}
+
+// ---- the police helicopter ----
+
+/** The helicopter joins at four stars, circles the player with its
+ *  spotlight, and leaves when the heat falls to two — or when the player
+ *  shakes it off under cover (that path lives in wanted.js). Its rotor
+ *  follows how close it is. */
+function updateHeli(G, audio, dt) {
+  const heli = G.heli;
+  const stars = G.wanted.stars;
+  if (!heli.active && stars >= WANTED.HELI_STARS) {
+    heli.active = true;
+    const a = G.rng.range(0, Math.PI * 2);
+    heli.x = G.player.x + Math.cos(a) * 620;
+    heli.y = G.player.y + Math.sin(a) * 620;
+    heli.angle = Math.atan2(G.player.y - heli.y, G.player.x - heli.x);
+    heli.speed = 120;
+    G.toast = { text: 'Police helicopter overhead — get under cover, off the road!', t: 0, dur: 4 };
+    G.audio?.gangWarn();
+  }
+  if (heli.active) {
+    if (stars <= WANTED.HELI_LEAVE_STARS) {
+      heli.active = false;
+      G.stats.heliEscapes++;
+      G.toast = { text: 'The helicopter broke off — you lost it.', t: 0, dur: 3 };
+      G.saveNeeded = true;
+      audio.rotor(0);
+      return;
+    }
+    heli.rotor += dt;
+    const wobble = gauss(G.rng);
+    heliStep(heli, G.player.x, G.player.y, dt, HELI.SPEED, HELI.ORBIT, wobble);
+    const d = dist(heli.x, heli.y, G.player.x, G.player.y);
+    audio.rotor(clamp(1 - d / 900, 0, 1));
+  } else {
+    audio.rotor(0);
+  }
 }
 
 // ---- particles, pickups, taxi, shops ----

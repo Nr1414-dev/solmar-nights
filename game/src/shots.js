@@ -4,7 +4,8 @@
 // steered by a simple autopilot (drive toward a waypoint, brake for walls,
 // walk toward a marker), so the frame is what a short game really looks
 // like and the same seed always gives the same frame. The cover is the
-// chase: three stars, police behind, the minimap and a job on the HUD.
+// chase: four stars, the police helicopter overhead, police behind, the
+// minimap and a job on the HUD.
 
 import { LANDMARKS, nearestRoadCentre, nearestRoadPoint } from './city.js';
 import { STEP } from './config.js';
@@ -118,21 +119,28 @@ export function stageShot(name, G, audio) {
   if (name === 'title') return { screen: SCREEN_TITLE };
   if (name === 'drive') {
     G.clock = 0.74; // low sun over the marina
-    // The drive shot rides the new bike: the fastest, most fragile vehicle
-    // in Solmar, west along the avenue toward the garage.
-    giveCar(G, 'bike', 1500, 1440, Math.PI);
-    startMission(G, 0);
-    G.mission.phase = 1; // already stolen: drive to the garage
-    const input = fakeInput(G, autopilotDrive(G, { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y }));
-    // Five seconds: still en route, the job objective still on the HUD.
-    runSteps(G, audio, input, 5);
-    // The bike is small: punch the camera in so it reads at a glance.
-    G.camera.zoom = 1.4;
-    G.banner = { title: 'FIRST WHEELS', sub: 'Ride the bike to Mara\'s garage', t: 0, dur: 6 };
+    // The drive shot rides the new courier van: the slow, heavy box that
+    // runs the seventh job, west along the avenue toward the first drop.
+    giveCar(G, 'delivery', 1500, 1440, Math.PI);
+    startMission(G, 6);
+    G.mission.phase = 1; // van already taken: run the drops
+    const input = fakeInput(G, autopilotDrive(G, { x: 300, y: 1680 }));
+    // Three and a half seconds: still en route on the avenue, the van
+    // below the job banner — any longer and it reaches the pier and the
+    // banner covers it.
+    runSteps(G, audio, input, 3.5);
+    // The van is big but slow: punch the camera in so it reads at a glance.
+    G.camera.zoom = 1.35;
+    // The banner starts mid-fade (t=1): at t=0 its alpha is 0 and the two
+    // paints the shot takes would never show it.
+    G.banner = { title: 'THE LAST DELIVERY', sub: 'Three parcels, 180 seconds — Marina Pier first', t: 1, dur: 6 };
     return { screen: SCREEN_PLAY };
   }
   if (name === 'foot') {
-    G.clock = 0.6; // bright midday
+    G.clock = 0.6; // bright midday, under fog
+    G.weather.state = 'fog';
+    G.weather.fog = 0.9;
+    G.weather.timer = 60;
     G.player.x = 1850;
     G.player.y = 2100;
     G.player.angle = -Math.PI / 2;
@@ -156,11 +164,12 @@ export function stageShot(name, G, audio) {
     G.banner = null;
     return { screen: SCREEN_PLAY };
   }
-  // cover: the chase. Three stars, police behind, dusk, downtown.
+  // cover: the chase. Four stars, the helicopter overhead, police behind,
+  // dusk, downtown.
   G.clock = 0.78;
   giveCar(G, 'sports', 1920, 1920, 0);
   startMission(G, 2); // Heat Wave: the alarm already tripped
-  G.wanted.heat = 70;
+  G.wanted.heat = 85;
   const input = fakeInput(G, autopilotDrive(G, { x: 3700, y: 1920 }));
   // Five and a half seconds: the car is still flying down the avenue
   // toward the docks, the chase hot behind it — any longer and the rams
@@ -191,6 +200,20 @@ export function stageShot(name, G, audio) {
   for (let tries = 0; tries < 3 && Math.abs(G.player.inCar?.speed ?? 0) < 120; tries++) {
     runSteps(G, audio, input, 1.5);
   }
-  G.banner = { title: 'HEAT WAVE', sub: 'Three stars. Lose the cops — break line of sight and stay hidden.', t: 0, dur: 6 };
+  // Four stars means the helicopter is up: if the chase cooled enough
+  // mid-shot for it to break off, put it back in the sky — the cover is
+  // about the heli as much as the cars. The chase also heats past four
+  // stars on its own (a wrecked patrol car is a crime too), so pin the
+  // heat back to four stars for the frame the dossier describes.
+  if (!G.heli.active) {
+    G.heli.active = true;
+    G.heli.x = p.x - 260;
+    G.heli.y = p.y - 180;
+    G.heli.angle = Math.atan2(p.y - G.heli.y, p.x - G.heli.x);
+    G.heli.speed = 200;
+  }
+  G.wanted.heat = 85;
+  G.wanted.stars = 4;
+  G.banner = { title: 'HEAT WAVE', sub: 'Four stars and a heli overhead. Lose the cops — break line of sight and stay hidden.', t: 1, dur: 6 };
   return { screen: SCREEN_PLAY };
 }

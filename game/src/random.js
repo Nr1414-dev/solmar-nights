@@ -50,7 +50,19 @@ export function createRandom(seed) {
 }
 
 export const clamp = (v, min, max) => (v < min ? min : v > max ? max : v);
+export const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 export const lerp = (a, b, t) => a + (b - a) * t;
+/** Smoothstep: 0 below `a`, 1 above `b`, eased between — for fades and fog. */
+export const smoothstep = (a, b, x) => {
+  const t = clamp01((x - a) / (b - a));
+  return t * t * (3 - 2 * t);
+};
+/** A standard-normal draw (Box-Muller): helicopter wobble and fog drift. */
+export function gauss(rng) {
+  const u = Math.max(rng.next(), 1e-9);
+  const v = rng.next();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
 export const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
 export const angleTo = (x1, y1, x2, y2) => Math.atan2(y2 - y1, x2 - x1);
 export const angleDiff = (a, b) => {

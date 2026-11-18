@@ -52,7 +52,16 @@ export const LANDMARKS = {
   docks: { x: 3600, y: 1680, name: 'Dock 9', kind: 'docks' },
   marina: { x: 300, y: 1680, name: 'Marina Pier', kind: 'marina' },
   arcade: { x: 2160, y: 700, name: 'Neon Arcade', kind: 'arcade' },
+  depot: { x: 3360, y: 3100, name: 'Solmar Courier Depot', kind: 'depot' },
 };
+
+/** The landmark of a kind ('gun', 'depot', …), or null when there is none. */
+export function landmarkByKind(kind) {
+  for (const key of Object.keys(LANDMARKS)) {
+    if (LANDMARKS[key].kind === kind) return LANDMARKS[key];
+  }
+  return null;
+}
 
 const SHOP_SIGNS = {
   gun: ['GUNS', 'AMMO'],
@@ -65,6 +74,7 @@ const SHOP_SIGNS = {
   docks: ['DOCK 9', 'FREIGHT'],
   marina: ['PIER', 'MARINA'],
   arcade: ['ARCADE', 'NEON'],
+  depot: ['COURIER', 'DEPOT'],
 };
 
 export function createCity(seed) {
@@ -157,10 +167,12 @@ export function createCity(seed) {
         continue;
       }
       // midtown: one or two mid-size blocks — or a pocket park, so the
-      // district breathes between the buildings: trees and a pond, no walls.
+      // district breathes between the buildings: trees, a fountain and a
+      // pond, no walls. The fountain is solid: cars and feet go around it.
       if (rng.chance(0.18)) {
         addTreesInBlock(x0, y0, x1, y1, 6);
-        props.push({ x: cx, y: cy, kind: 'pond', w: 110, h: 70, solid: false });
+        props.push({ x: cx, y: cy, kind: 'fountain', w: 64, h: 64, solid: true });
+        props.push({ x: cx + 130, y: cy - 90, kind: 'pond', w: 110, h: 70, solid: false });
         continue;
       }
       if (rng.chance(0.6)) {

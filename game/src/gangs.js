@@ -34,17 +34,24 @@ function spawnWave(G) {
   // Three Kings to start, one more every two squads cleared, six at most.
   const size = Math.min(3 + Math.floor(gangs.cleared / 2), 6);
   const p = G.player;
+  // Every third squad brings an Enforcer: twice the health, a faster
+  // trigger finger and a $250 bounty — the Kings' answer to a Dana who
+  // keeps wiping their squads.
+  const enforcerAt = gangs.wave % 3 === 0 ? Math.floor(G.rng.range(0, size)) : -1;
   for (let i = 0; i < size; i++) {
     const a = G.rng.range(0, Math.PI * 2);
     const spot = nearestRoadPoint(p.x + Math.cos(a) * G.rng.range(500, 650), p.y + Math.sin(a) * G.rng.range(500, 650));
+    const enforcer = i === enforcerAt;
     gangs.active.push({
-      x: spot.x, y: spot.y, angle: 0, hp: 50, speed: 148,
+      x: spot.x, y: spot.y, angle: 0, hp: enforcer ? 120 : 50, speed: enforcer ? 165 : 148,
       state: 'chase', shootCd: G.rng.range(0.5, 1.5), punchCd: 0,
-      repositionCd: 8, dead: false,
+      repositionCd: 8, dead: false, enforcer,
     });
   }
   gangs.waveActive = true;
-  G.toast = { text: `Salt Kings hit squad incoming — ${size} armed Kings on your tail!`, t: 0, dur: 4 };
+  G.toast = { text: enforcerAt >= 0
+    ? `Salt Kings hit squad incoming — ${size} armed Kings, one of them an ENFORCER ($250 bounty)!`
+    : `Salt Kings hit squad incoming — ${size} armed Kings on your tail!`, t: 0, dur: 4 };
   G.audio?.gangWarn();
 }
 
@@ -53,7 +60,8 @@ export function killGangMember(G, m) {
   if (m.dead) return;
   m.dead = true;
   G.stats.gangKills++;
-  G.player.cash += ECONOMY.GANG_BOUNTY;
+  const bounty = m.enforcer ? ECONOMY.ENFORCER_BOUNTY : ECONOMY.GANG_BOUNTY;
+  G.player.cash += bounty;
   G.audio?.cash();
   for (let i = 0; i < 10; i++) {
     const a = G.rng.range(0, Math.PI * 2);
@@ -63,7 +71,7 @@ export function killGangMember(G, m) {
     });
   }
   // The floater needs the world helper, so gangs.js writes it directly.
-  G.floaters.push({ x: m.x, y: m.y - 20, text: `+$${ECONOMY.GANG_BOUNTY} Salt Kings bounty`, life: 1.4, color: '#7cff4d' });
+  G.floaters.push({ x: m.x, y: m.y - 20, text: `+$${bounty} Salt Kings bounty${m.enforcer ? ' — ENFORCER DOWN' : ''}`, life: 1.4, color: '#7cff4d' });
 }
 
 /**
@@ -95,6 +103,10 @@ export function updateGangs(G, dt, hooks) {
     if (m.dead) continue;
     const d = dist(m.x, m.y, p.x, p.y);
     m.angle = Math.atan2(p.y - m.y, p.x - m.x);
+    // Fog slows the squad down and steadies nothing: they walk slower and
+    // their aim gets worse, so fog is the player's friend against a wave.
+    const fog = G.weather?.fog ?? 0;
+    const speed = m.speed * (1 - 0.2 * fog);
     if (d > 700) {
       // Outrun: the squad catches up off-screen and reappears nearby.
       m.repositionCd -= dt;
@@ -106,18 +118,19 @@ export function updateGangs(G, dt, hooks) {
         m.repositionCd = 8;
       }
     } else {
-      m.x += Math.cos(m.angle) * m.speed * dt;
-      m.y += Math.sin(m.angle) * m.speed * dt;
+      m.x += Math.cos(m.angle) * speed * dt;
+      m.y += Math.sin(m.angle) * speed * dt;
       resolveCircle(G.city, m, 12);
     }
     // Shoot from range with line of sight; the car takes the bullets when
-    // Dana is driving, she takes them on foot.
+    // Dana is driving, she takes them on foot. An Enforcer shoots faster
+    // and straighter; fog makes every King miss more.
     if (d < 340 && d > 50 && hasLineOfSight(G, m.x, m.y, p.x, p.y)) {
       m.shootCd -= dt;
       if (m.shootCd <= 0) {
-        m.shootCd = G.rng.range(0.9, 1.6);
+        m.shootCd = G.rng.range(m.enforcer ? 0.6 : 0.9, m.enforcer ? 1.1 : 1.6);
         G.audio?.shoot();
-        const hit = G.rng.chance(0.18);
+        const hit = G.rng.chance((m.enforcer ? 0.3 : 0.18) * (1 - 0.5 * fog));
         const aim = m.angle + G.rng.range(-0.12, 0.12);
         const endX = m.x + Math.cos(aim) * d;
         const endY = m.y + Math.sin(aim) * d;
@@ -145,4 +158,9 @@ export function updateGangs(G, dt, hooks) {
 /** Kings still standing in the current squad, for the HUD and the minimap. */
 export function gangAliveCount(G) {
   return G.gangs.active.filter((m) => !m.dead).length;
+}
+
+/** Enforcers still standing in the current squad, for the HUD warning. */
+export function gangEnforcerCount(G) {
+  return G.gangs.active.filter((m) => !m.dead && m.enforcer).length;
 }
