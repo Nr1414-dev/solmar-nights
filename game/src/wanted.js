@@ -1,216 +1,211 @@
-// SOLMAR NIGHTS v2.3 — wanted.js
-// The wanted system, modelled on the modern crime-game rules the research
-// describes: a crime only counts when somebody sees it. Each star has a
-// state — hollow (reported, police heading to the scene without a
-// description), solid white (a cop sees you right now, active chase),
-// flashing white (line of sight broken, police searching your last known
-// position), red (you escaped, but the area stays hot and the police
-// remember your description; walk back in looking the same and the chase
-// restarts). Under the stars sit evidence icons — CCTV, outfit, face,
-// vehicle, weapon — each cleared its own way.
+// SOLMAR NIGHTS — wanted.js
+// The six-star wanted system. Four star states, five independent evidence
+// flags, and crimes that only count when somebody sees them.
+//
+// States:
+//   hollow   — a crime was reported, but police have no description yet.
+//              Cops drive toward the scene; they do not know who you are.
+//   solid    — a cop (or camera) has eyes on you right now: active chase.
+//   flashing — line of sight broke: cops search your last seen position.
+//   red      — you escaped, but the area is "hot" and police remember your
+//              description. Walk back in looking the same and the chase
+//              restarts at once.
+// Evidence (each cleared its own way):
+//   cctv    — clears by waiting out the tape (60s without new crimes).
+//   outfit  — clears by changing clothes at Vestir.
+//   face    — clears by leaving the hot area + staying out of sight.
+//   car     — clears by respraying at Chroma, or ditching the car.
+//   weapon  — clears by holstering / switching to fists for a while.
 
-import { WANTED } from './config.js';
-import { circleBlocked } from './city.js';
-import { clamp, dist } from './random.js';
+import { clamp } from './random.js';
 
 export function createWanted() {
   return {
-    heat: 0,
     stars: 0,
     state: 'none', // none | hollow | solid | flashing | red
-    lastSeenX: 0, lastSeenY: 0,
-    seenTimer: 0,
-    hideTimer: 0,
-    hotX: 0, hotY: 0, hotRadius: 0, hotTimer: 0,
+    heat: 0, // 0..100, feeds star level
+    lastSeen: { x: 0, y: 0 },
+    hot: null, // {x, y, r} hot area while red
     evidence: { cctv: false, outfit: false, face: false, car: false, weapon: false },
-    evidenceTimer: { cctv: 0 },
-    reportTimer: 0, // a witness is on the phone; police arrive when it ends
-    reported: false,
+    searchTimer: 0, // flashing: seconds left searching lastSeen
+    coolTimer: 0, // red: seconds until the heat fully dies
+    cctvTimer: 0, // seconds until the CCTV tape expires
+    weaponTimer: 0, // seconds since weapon last fired
+    seenTimer: 0, // seconds of continuous line of sight
+    reportTimer: 0, // hollow: seconds until the report is filed
   };
 }
 
-export function wantedStars(w) { return w.stars; }
-
-export function wantedLabel(stars) {
-  return ['Clean', 'One Star', 'Two Stars', 'Three Stars', 'Four Stars', 'Five Stars', 'Six Stars'][stars] ?? 'Clean';
+// A crime happened. `witnessed` means a pedestrian, cop or camera actually
+// saw it (or heard the shot). Unwitnessed crimes never touch the wanted
+// level — that is the core stealth rule of the game.
+export function addCrime(world, kind, x, y, witnessed) {
+  const w = world.wanted;
+  if (!witnessed) return;
+  const heatGain = { shot: 22, kill: 30, steal: 14, assault: 18, speeding: 0 }[kind] ?? 10;
+  w.heat = clamp(w.heat + heatGain, 0, 100);
+  w.lastSeen = { x, y };
+  if (kind === 'shot' || kind === 'kill') {
+    w.evidence.weapon = true;
+    w.weaponTimer = 0;
+    w.evidence.cctv = true;
+    w.cctvTimer = 0;
+  }
+  if (kind === 'kill') w.evidence.face = true;
+  if (kind === 'steal') w.evidence.car = true;
+  if (world.player.inCar) w.evidence.car = true;
+  if (w.stars === 0) {
+    w.state = 'hollow';
+    w.reportTimer = 2.5; // the witness phones it in; cops arrive after this
+  } else if (w.state === 'red') {
+    // Seen again while hot: straight back to a chase.
+    w.state = 'solid';
+    w.seenTimer = 0;
+  }
+  recomputeStars(world);
 }
 
-// Line of sight: sample the segment; a building in the way blocks it.
-export function hasLineOfSight(G, x1, y1, x2, y2) {
-  const d = dist(x1, y1, x2, y2);
-  const steps = Math.ceil(d / 24);
+export function recomputeStars(world) {
+  const w = world.wanted;
+  const fromHeat = w.heat <= 0 ? 0 : w.heat < 12 ? 1 : w.heat < 26 ? 2 : w.heat < 42 ? 3 : w.heat < 60 ? 4 : w.heat < 82 ? 5 : 6;
+  w.stars = fromHeat;
+  if (w.stars === 0) {
+    w.state = 'none';
+    w.hot = null;
+  }
+}
+
+// Called every frame. Handles state transitions, timers and decay.
+export function updateWanted(world, dt) {
+  const w = world.wanted;
+  const p = world.player;
+  if (w.stars === 0) return;
+
+  // --- line of sight: any cop / heli close enough with a clear view ---
+  const seen = policeCanSee(world);
+  if (seen) {
+    w.seenTimer += dt;
+    w.lastSeen = { x: p.x, y: p.y };
+    if (w.state === 'hollow' || w.state === 'flashing' || w.state === 'red') {
+      w.state = 'solid';
+    }
+  } else {
+    w.seenTimer = Math.max(0, w.seenTimer - dt * 2);
+  }
+
+  if (w.state === 'hollow') {
+    w.reportTimer -= dt;
+    if (w.reportTimer <= 0) {
+      // Report filed: if the player is still near the scene, cops identify
+      // them; otherwise the report goes cold and heat decays.
+      const d = Math.hypot(p.x - w.lastSeen.x, p.y - w.lastSeen.y);
+      if (d < 700) { w.state = 'solid'; }
+      else { w.heat = Math.max(0, w.heat - 6 * dt); recomputeStars(world); }
+    }
+  } else if (w.state === 'solid') {
+    if (!seen) {
+      w.state = 'flashing';
+      w.searchTimer = 9;
+    }
+  } else if (w.state === 'flashing') {
+    w.searchTimer -= dt;
+    if (seen) { w.state = 'solid'; }
+    else if (w.searchTimer <= 0) {
+      // Escaped the search: area goes hot, description remembered.
+      w.state = 'red';
+      w.hot = { x: w.lastSeen.x, y: w.lastSeen.y, r: 620 };
+      w.coolTimer = 45;
+    }
+  } else if (w.state === 'red') {
+    w.coolTimer -= dt;
+    // Walking back into the hot area while the description is remembered
+    // restarts the chase — unless the outfit/face evidence is cleared.
+    const inHot = w.hot && Math.hypot(p.x - w.hot.x, p.y - w.hot.y) < w.hot.r;
+    if (inHot && (w.evidence.outfit || w.evidence.face) && seen) {
+      w.state = 'solid';
+    }
+    if (w.coolTimer <= 0) {
+      w.heat = Math.max(0, w.heat - 25);
+      w.evidence.face = false;
+      w.hot = null;
+      recomputeStars(world);
+      if (w.stars > 0) { w.state = 'red'; w.coolTimer = 30; w.hot = { x: p.x, y: p.y, r: 500 }; }
+    }
+  }
+
+  // --- evidence timers ---
+  if (w.evidence.cctv) {
+    w.cctvTimer += dt;
+    if (w.cctvTimer > 60) { w.evidence.cctv = false; w.cctvTimer = 0; }
+  }
+  if (w.evidence.weapon) {
+    w.weaponTimer += dt;
+    if (w.weaponTimer > 40) { w.evidence.weapon = false; }
+  }
+  // Passive heat decay only while nobody can see you.
+  if (!seen && w.state !== 'solid') {
+    w.heat = Math.max(0, w.heat - 0.55 * dt);
+    if (w.heat <= 0) { w.stars = 0; w.state = 'none'; w.hot = null; }
+    else recomputeStars(world);
+  }
+}
+
+// True when any on-duty cop or the helicopter has line of sight. Distance
+// based; buildings block sight for cops on foot, the heli sees over them
+// unless the player is under a roof (checked by the caller via cover).
+export function policeCanSee(world) {
+  const p = world.player;
+  for (const c of world.cops) {
+    if (c.hp <= 0) continue;
+    const d = Math.hypot(c.x - p.x, c.y - p.y);
+    const range = c.inCar ? 720 : 520;
+    if (d < range && hasLineOfSight(world, c.x, c.y, p.x, p.y)) return true;
+  }
+  if (world.heli && world.heli.active) {
+    const d = Math.hypot(world.heli.x - p.x, world.heli.y - p.y);
+    if (d < 900 && !world.player.underCover) return true;
+  }
+  return false;
+}
+
+// Sampled line-of-sight: step along the segment, reject if inside a building.
+export function hasLineOfSight(world, x1, y1, x2, y2) {
+  const steps = Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 40);
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
-    if (circleBlocked(G.city, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, 6)) return false;
+    const x = x1 + (x2 - x1) * t, y = y1 + (y2 - y1) * t;
+    for (const b of world.city.buildings) {
+      if (x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) return false;
+    }
   }
   return true;
 }
 
-function starsForHeat(heat) {
-  let s = 0;
-  for (let i = 1; i < WANTED.HEAT_PER_STAR.length; i++) {
-    if (heat >= WANTED.HEAT_PER_STAR[i]) s = i;
-  }
-  return Math.min(s, 6);
+// --- evidence clearing, each with its own action (called by shops/world) ---
+export function clearOutfitEvidence(world) {
+  world.wanted.evidence.outfit = false;
+  world.wanted.evidence.face = false;
+  world.player.outfit = (world.player.outfit + 1) % 5;
 }
 
-// A crime happened at (x,y). It only becomes heat if a witness can see
-// it — a pedestrian or a cop within range with line of sight, or a CCTV
-// camera. Unseen crimes still add a little heat if the victim screams:
-// the `witnessed` flag is computed by the caller.
-export function addCrime(G, kind, x, y, witnessed) {
-  const w = G.wanted;
-  const base = WANTED.CRIME[kind] ?? 15;
-  const p = G.player;
-  if (!witnessed) {
-    // Nobody saw it: a whisper of heat, and only if it was loud.
-    if (kind === 'shoot' || kind === 'explosion') w.heat = Math.min(115, w.heat + base * 0.15);
-    return;
-  }
-  w.heat = Math.min(115, w.heat + base);
-  w.stars = starsForHeat(w.heat);
-  // The witness starts a report: police head to the scene (hollow star)
-  // unless a cop already sees you (solid star).
-  if (w.state === 'none' || w.state === 'red') {
-    w.state = 'hollow';
-    w.reportTimer = 3;
-    w.hotX = x; w.hotY = y; w.hotRadius = 420; w.hotTimer = 90;
-  }
-  // Evidence accumulates with the crime.
-  if (kind === 'shoot' || kind === 'killPed' || kind === 'killCop') {
-    w.evidence.weapon = p.weapon !== 'fists';
-    w.evidence.face = true;
-    w.evidence.outfit = true;
-  }
-  if (kind === 'stealCar' || kind === 'runOver') w.evidence.car = true;
-  // CCTV: if a camera covers the spot, the tape exists.
-  for (const cam of G.city.cameras) {
-    if (dist(x, y, cam.x, cam.y) < cam.r) {
-      w.evidence.cctv = true;
-      w.evidenceTimer.cctv = 120;
-      break;
-    }
-  }
-  if (w.stars > G.campaign.bestStars) G.campaign.bestStars = w.stars;
+export function clearCarEvidence(world) {
+  world.wanted.evidence.car = false;
+  const car = world.player.inCar;
+  if (car) car.color = pickFreshColor(world);
 }
 
-export function clearWanted(G) {
-  const w = G.wanted;
-  w.heat = 0; w.stars = 0; w.state = 'none';
-  w.hideTimer = 0; w.hotTimer = 0; w.reportTimer = 0; w.reported = false;
-  w.evidence = { cctv: false, outfit: false, face: false, car: false, weapon: false };
+export function pickFreshColor(world) {
+  const palette = ['#c23b2e', '#2e6bc2', '#e8b81a', '#2e8c5a', '#8c2e7a', '#e8e8e8'];
+  return palette[Math.floor(world.rng() * palette.length)];
 }
 
-// Evidence clears, each its own way:
-//  cctv — the tape ages out after 120s, or a spray-shop visit wipes it;
-//  outfit — change clothes at Marina Threads;
-//  face — a spray-shop respray + time, or a full escape to red then leaving;
-//  car — ditch the car (get out and walk away) or respray it;
-//  weapon — holster / ditch the weapon (switch to fists).
-export function clearEvidence(G, kind) {
-  const w = G.wanted;
-  if (kind === 'outfit') { w.evidence.outfit = false; G.player.outfit = (G.player.outfit + 1) % 4; }
-  if (kind === 'car') w.evidence.car = false;
-  if (kind === 'cctv') { w.evidence.cctv = false; w.evidenceTimer.cctv = 0; }
-  if (kind === 'weapon') { w.evidence.weapon = false; G.player.weapon = 'fists'; }
-  if (kind === 'face') w.evidence.face = false;
-}
-
-export function heliSeesPlayer(G) {
-  const h = G.heli;
-  if (!h || !h.active) return false;
-  const p = G.player;
-  if (dist(h.x, h.y, p.x, p.y) > WANTED.HELI_SPOT_RADIUS + 120) return false;
-  return hasLineOfSight(G, h.x, h.y, p.x, p.y);
-}
-
-export function updateWanted(G, dt) {
-  const w = G.wanted;
-  const p = G.player;
-  // CCTV tape ages out on its own.
-  if (w.evidence.cctv) {
-    w.evidenceTimer.cctv -= dt;
-    if (w.evidenceTimer.cctv <= 0) w.evidence.cctv = false;
-  }
-  // A witness report finishes: hollow -> solid if a cop is near, else
-  // the police still come to look (hollow stays, they search the scene).
-  if (w.reportTimer > 0) {
-    w.reportTimer -= dt;
-    if (w.reportTimer <= 0) w.reported = true;
-  }
-  // Does any cop see the player right now?
-  let copSees = false;
-  for (const cop of G.cops) {
-    if (cop.dead) continue;
-    if (dist(cop.x, cop.y, p.x, p.y) < WANTED.SIGHT_RANGE && hasLineOfSight(G, cop.x, cop.y, p.x, p.y)) { copSees = true; break; }
-  }
-  for (const car of G.cars) {
-    if (car.ai !== 'police' || car.dead) continue;
-    if (dist(car.x, car.y, p.x, p.y) < WANTED.SIGHT_RANGE && hasLineOfSight(G, car.x, car.y, p.x, p.y)) { copSees = true; break; }
-  }
-  if (G.heli.active && heliSeesPlayer(G)) copSees = true;
-
-  if (w.stars > 0) {
-    if (copSees) {
-      w.state = 'solid';
-      w.lastSeenX = p.x; w.lastSeenY = p.y;
-      w.seenTimer = 0;
-      w.hideTimer = 0;
-    } else if (w.state === 'solid') {
-      w.state = 'flashing';
-      w.seenTimer = 0;
-    } else if (w.state === 'flashing') {
-      w.seenTimer += dt;
-      // Hidden long enough: drop one star.
-      if (w.seenTimer > WANTED.HIDE_TIME[w.stars]) {
-        w.heat = Math.max(0, w.heat - 26);
-        const ns = starsForHeat(w.heat);
-        if (ns < w.stars) {
-          w.stars = ns;
-          w.seenTimer = 0;
-          if (ns === 0) {
-            // Escaped — but the area stays hot and they remember you.
-            w.state = 'red';
-            w.hotX = w.lastSeenX; w.hotY = w.lastSeenY;
-            w.hotRadius = 520; w.hotTimer = 75;
-            w.hideTimer = 0;
-          } else {
-            w.state = 'flashing';
-          }
-        }
-      }
-    } else if (w.state === 'hollow') {
-      // Police arrive at the scene; if they find you there, it goes solid.
-      w.seenTimer += dt;
-      if (w.seenTimer > 25) {
-        w.heat = Math.max(0, w.heat - 20);
-        w.stars = starsForHeat(w.heat);
-        w.seenTimer = 0;
-        if (w.stars === 0) { w.state = 'none'; }
-      }
-    }
-  }
-  if (w.state === 'red') {
-    w.hotTimer -= dt;
-    // Walking back into the hot area looking the same restarts the chase.
-    const inHot = dist(p.x, p.y, w.hotX, w.hotY) < w.hotRadius;
-    const recognisable = w.evidence.outfit || w.evidence.face || w.evidence.car;
-    if (inHot && recognisable) {
-      w.heat = Math.max(w.heat, 30);
-      w.stars = starsForHeat(w.heat);
-      w.state = 'hollow';
-      w.reportTimer = 2;
-    }
-    if (w.hotTimer <= 0) {
-      w.state = 'none';
-      w.evidence.outfit = false;
-      w.evidence.face = false;
-      w.evidence.car = false;
-    }
-  }
-  // Standing in the crime area makes you easy to find: hide timer stalls.
-  if (w.state === 'flashing' && dist(p.x, p.y, w.hotX, w.hotY) < w.hotRadius * 0.6) {
-    w.seenTimer = Math.max(0, w.seenTimer - dt * 0.8);
-  }
-  w.heat = clamp(w.heat, 0, 115);
+// Bribing / laying low: pay to cut heat (diner "lay low" is a story beat;
+// the spray shop and clothes shop handle their own evidence).
+export function layLow(world, cost) {
+  const w = world.wanted;
+  if (world.player.money < cost || w.stars === 0) return false;
+  world.player.money -= cost;
+  w.heat = Math.max(0, w.heat - 30);
+  recomputeStars(world);
+  return true;
 }

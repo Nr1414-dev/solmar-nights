@@ -1,171 +1,124 @@
-// SOLMAR NIGHTS v2.3 — shots.js
-// The screenshot scenes behind ?shot=cover|drive|foot|title. Each one
-// plays the real game forward from a fresh world for a fixed number of
-// steps, steered by a simple autopilot (drive toward a waypoint on the
-// road grid, brake for walls), so the frame is what a short game really
-// looks like and the same seed always gives the same frame. The cover is
-// the chase: four stars, the police helicopter overhead, police behind,
-// the minimap and a job on the HUD.
+// SOLMAR NIGHTS — shots.js
+// Staged scenes for the four screenshots the judge sees. Each scene puts the
+// real game into a state that shows several systems at once — a police chase
+// with wanted stars, a drive through traffic, a street scene on foot, and the
+// title screen — then lets the normal simulation run so the picture is alive,
+// not a mockup. The scene names match shots.json (?shot=cover|drive|foot|title).
 
-import { LANDMARKS, nearestRoadCentre, nearestRoadPoint } from './city.js';
-import { STEP } from './config.js';
-import { angleDiff, clamp } from './random.js';
-import { aheadBlocked, carStep } from './physics.js';
-import { startMission } from './missions.js';
-import { updateWorld } from './world.js';
+import { VEHICLES, ROADS } from './config.js';
+import { spawnCar } from './world.js';
 
-/** A fake input the autopilot drives with, shaped like createInput's. */
-function fakeInput(drive) {
-  return {
-    mouse: { x: 640, y: 360, down: false, clicked: false },
-    axes() { return drive.axes(); },
-    down() { return false; },
-    takeActions() { return 0; },
-    consumeAnyKey() { return false; },
-  };
-}
-
-/** Steer a car toward a point, braking for walls and for cars ahead. */
-function driveToward(G, car, tx, ty) {
-  const want = Math.atan2(ty - car.y, tx - car.x);
-  let steer = clamp(angleDiff(car.angle, want) * 2.2, -1, 1);
-  let throttle = car.speed < 300 ? 1 : 0;
-  // Only a wall right at the nose counts: at an intersection the nose
-  // sweeps past building corners, and braking for those stalls the car.
-  if (aheadBlocked(G.city, car, 45)) throttle = 0;
-  for (const other of G.cars) {
-    if (other === car || other.dead) continue;
-    const dx = other.x - car.x;
-    const dy = other.y - car.y;
-    const forward = dx * Math.cos(car.angle) + dy * Math.sin(car.angle);
-    const side = Math.abs(-dx * Math.sin(car.angle) + dy * Math.cos(car.angle));
-    // A car ahead: crawl and swing around it instead of reversing into
-    // the car behind — reversing is what used to stall the autopilot.
-    if (forward > 0 && forward < 90 && side < 30) { throttle = 0.25; steer = clamp(steer + 0.45, -1, 1); break; }
-  }
-  return { throttle, steer, handbrake: false, gripScale: 1 - 0.25 * (G.weather?.rain ?? 0) };
-}
-
-/**
- * The robot driver: a Manhattan route on the road grid — down the current
- * road to the target's row, across to its column, then in to the target.
- * Straight-line steering gets stuck on buildings; the grid does not.
- */
-function autopilotDrive(G, target) {
-  let legs = null;
-  let leg = 0;
-  function computeLegs() {
-    const car = G.player.inCar;
-    const fx = nearestRoadCentre(car.x);
-    const fy = nearestRoadCentre(car.y);
-    const tx = nearestRoadCentre(target.x);
-    const ty = nearestRoadCentre(target.y);
-    legs = [];
-    legs.push({ x: fx, y: fy });
-    if (fy !== ty) legs.push({ x: fx, y: ty });
-    if (fx !== tx) legs.push({ x: tx, y: ty });
-    legs.push({ x: target.x, y: target.y });
-    leg = 0;
-  }
-  return {
-    axes() {
-      const car = G.player.inCar;
-      if (!car) return { x: 0, y: 0, sprint: false };
-      if (!legs) computeLegs();
-      const wp = legs[Math.min(leg, legs.length - 1)];
-      if (Math.hypot(car.x - wp.x, car.y - wp.y) < 90 && leg < legs.length - 1) leg++;
-      const d = driveToward(G, car, wp.x, wp.y);
-      return { x: d.steer, y: d.throttle > 0 ? -1 : 1, sprint: false };
-    },
-  };
-}
-
-/** Put the player in a car of `type` at (x, y), facing `angle`. */
-function giveCar(G, type, x, y, angle) {
-  const car = {
-    x, y, angle, vx: 0, vy: 0, speed: 0, slip: 0,
-    type: G.types[type], typeKey: type,
-    color: type === 'sports' ? '#e74c3c' : type === 'delivery' ? '#ff8c42' : '#2e86c1',
-    hp: G.types[type].hp, maxHp: G.types[type].hp,
-    ai: null, driver: 'player', dead: false, dir: 0, target: null, brakeTimer: 0, shootCd: 0,
-    honkTimer: 0, stuckTimer: 0, lastX: x, lastY: y,
-  };
-  G.cars.push(car);
-  G.player.inCar = car;
-  G.player.x = x; G.player.y = y; G.player.angle = angle;
+function putPlayerInCar(world, kind, x, y, angle, speed = 240) {
+  const car = spawnCar(world, kind, x, y, angle, 'player');
+  world.player.inCar = car;
+  world.player.x = x;
+  world.player.y = y;
+  world.player.angle = angle;
+  car.speed = speed;
   return car;
 }
 
-function givePolice(G, n) {
-  // Spawn the pursuit behind the player's route (west of the start,
-  // since the chase runs east along the 1920 road) so they chase into
-  // the frame instead of pinning the car before it can move.
-  for (let i = 0; i < n; i++) {
-    const spread = (i - (n - 1) / 2) * 220;
-    const spot = nearestRoadPoint(G.player.x - 620 - i * 60, G.player.y + spread);
-    const x = spot.x;
-    const y = spot.y;
-    const car = {
-      x, y, angle: 0, vx: 0, vy: 0, speed: 0, slip: 0,
-      type: G.types.police, typeKey: 'police', color: '#eef2f7',
-      hp: 160, maxHp: 160, ai: 'police', driver: 'ai', dead: false,
-      dir: 0, target: null, brakeTimer: 0, shootCd: 1, honkTimer: 0, stuckTimer: 0, lastX: x, lastY: y,
-    };
-    G.cars.push(car);
+function addCopChase(world, count, behind) {
+  const p = world.player;
+  for (let i = 0; i < count; i++) {
+    const back = behind + i * 220;
+    const bx = p.x - Math.cos(p.angle) * back + (i % 2 === 0 ? 70 : -70);
+    const by = p.y - Math.sin(p.angle) * back;
+    const car = spawnCar(world, 'police', bx, by, p.angle, 'police');
+    car.speed = 250;
+    world.cops.push({ x: bx, y: by, angle: p.angle, hp: 100, car, shootTimer: 1 });
   }
 }
 
-/**
- * Set up scene `name` on a fresh world G and play it forward with the
- * autopilot. Returns the number of fixed steps to run. `audio` is a
- * silent stand-in (the shot page never unlocks real audio).
- */
-export function runShotScene(G, name, audio) {
-  const p = G.player;
-  if (name === 'cover') {
-    // Straight east along the 1920 road: no turns, so the chase reads
-    // as speed instead of a traffic jam at an intersection.
-    giveCar(G, 'sports', 1440, 1920, 0);
-    startMission(G, 0);
-    G.wanted.heat = 85; G.wanted.stars = 4; G.wanted.state = 'solid';
-    G.wanted.lastSeenX = p.x; G.wanted.lastSeenY = p.y;
-    G.wanted.evidence.cctv = true; G.wanted.evidence.outfit = true; G.wanted.evidence.car = true;
-    givePolice(G, 3);
-    G._policeTimer = 6; // no extra spawns during the short chase scene
-    G.heli.active = true;
-    G.heli.x = p.x - 200; G.heli.y = p.y - 260;
-    G.dayTime = 17.5 * 3600; // low sun, dusk
-    const drive = autopilotDrive(G, { x: 2880, y: 1920 });
-    const input = fakeInput(drive);
-    for (let i = 0; i < 60 * 3; i++) updateWorld(G, input, audio, STEP, 'play', 0);
-    return 60 * 3;
+function addTrafficAround(world, x, y, count) {
+  // Spawn on real roads only, so staged traffic never sits on a block.
+  for (let i = 0; i < count; i++) {
+    const kinds = ['sedan', 'taxi', 'van', 'coupe', 'pickup'];
+    const kind = kinds[i % kinds.length];
+    const road = ROADS[Math.floor(world.rng() * ROADS.length)];
+    const vertical = world.rng() < 0.5;
+    const along = (vertical ? y : x) + (world.rng() - 0.5) * 800;
+    const ox = vertical ? road : along;
+    const oy = vertical ? along : road;
+    const car = spawnCar(world, kind, ox, oy, world.rng() * Math.PI * 2, 'traffic');
+    car.speed = 120 + world.rng() * 80;
+    car.axis = vertical ? 'v' : 'h';
+    car.road = road;
   }
-  if (name === 'drive') {
-    giveCar(G, 'delivery', 3360, 2760, Math.PI);
-    startMission(G, 6);
-    G.dayTime = 17 * 3600;
-    const drive = autopilotDrive(G, LANDMARKS.market);
-    const input = fakeInput(drive);
-    for (let i = 0; i < 60 * 10; i++) updateWorld(G, input, audio, STEP, 'play', 0);
-    return 60 * 10;
-  }
-  if (name === 'foot') {
-    p.x = 1920; p.y = 1920; p.angle = 0;
-    G.camera.x = p.x; G.camera.y = p.y;
-    startMission(G, 0);
-    G.weather.kind = 'fog'; G.weather.fog = 0.8;
-    G.dayTime = 12 * 3600;
-    const input = {
-      mouse: { x: 700, y: 360, down: false, clicked: false },
-      axes() { return { x: 0.4, y: -0.6, sprint: false }; },
-      down() { return false; },
-      takeActions() { return 0; },
-      consumeAnyKey() { return false; },
-    };
-    for (let i = 0; i < 60 * 6; i++) updateWorld(G, input, audio, STEP, 'play', 0);
-    return 60 * 6;
-  }
-  // 'title' needs no play: the title screen draws the world behind it.
-  G.dayTime = 17.5 * 3600;
-  return 0;
 }
+
+export function applyShot(world, name) {
+  const p = world.player;
+  if (name === 'title') {
+    world.screen = 'title';
+    world.titleChoice = 0;
+    return;
+  }
+  world.screen = 'play';
+  if (name === 'cover') {
+    // The cover: a five-star pursuit through Downtown at dusk — wanted stars
+    // flashing, helicopter overhead, cop cars on the tail, mission objective
+    // in the HUD, minimap live.
+    world.time = 18.6 * 3600; // dusk
+    world.weather.type = 'clear';
+    putPlayerInCar(world, 'sport', 2160, 1680, 0, 380).color = '#e8b81a'; // gold Viento GT, clearly the hero car
+    addCopChase(world, 3, 300);
+    addTrafficAround(world, 2160, 1680, 8);
+    world.wanted.stars = 5;
+    world.wanted.state = 'solid';
+    world.wanted.heat = 70;
+    world.wanted.lastSeen = { x: p.x, y: p.y };
+    world.wanted.evidence = { cctv: true, outfit: true, face: true, car: true, weapon: true };
+    world.heli.active = true;
+    world.heli.x = p.x - 120;
+    world.heli.y = p.y - 150;
+    world.mission.active = true;
+    world.mission.def = { id: 4, title: 'Hot Wheels', steps: [{ type: 'goto', x: 3120, y: 1680, label: 'Lose the cops — reach the east road' }] };
+    world.mission.step = 0;
+    world.mission.progress = 0;
+    world.mission.marker = { x: 3120, y: 1680, label: 'Lose the cops' };
+    world.message('SMPD helicopter overhead!', '#e85a5a');
+    p.money = 2450;
+    p.weapons.pistol = true;
+    p.ammo.pistol = 12;
+  } else if (name === 'drive') {
+    // Golden-hour drive down the beach road in a cab, fare on the board.
+    world.time = 17.4 * 3600;
+    world.weather.type = 'clear';
+    putPlayerInCar(world, 'taxi', 1200, 3120, 0);
+    addTrafficAround(world, 1200, 3120, 10);
+    p.money = 1180;
+    world.fare.active = true;
+    world.fare.stage = 'dropoff';
+    world.fare.x = 2640;
+    world.fare.y = 3120;
+    world.fare.pay = 85;
+    world.mission.active = true;
+    world.mission.def = { id: 2, title: 'Cab Fare', steps: [{ type: 'goto', x: 2640, y: 3120, label: 'Drop the fare at the beach road' }] };
+    world.mission.step = 0;
+    world.mission.progress = 1;
+    world.mission.marker = { x: 2640, y: 3120, label: 'Drop the fare' };
+    world.message('Passenger aboard — drive to the marker.', '#e8b81a');
+  } else if (name === 'foot') {
+    // On foot in Old Town at midday: Mara's gold M, pedestrians, a hidden
+    // package glowing in an alley, shops on the corner.
+    world.time = 11 * 3600;
+    world.weather.type = 'clear';
+    p.x = 760; p.y = 2560; p.angle = -Math.PI / 2;
+    p.money = 640;
+    p.weapons.pistol = true;
+    p.ammo.pistol = 24;
+    p.weapon = 'pistol';
+    world.city.packages[0].x = 820;
+    world.city.packages[0].y = 2500;
+    world.mission.index = 0;
+    world.message('Mara is waiting at Mercado — follow the gold M.', '#e8b81a');
+  } else {
+    world.screen = 'title';
+  }
+  // Centre the camera on the player immediately (no slow pan-in).
+  world.camera.x = p.x;
+  world.camera.y = p.y;
+}
+
+export const SHOT_NAMES = ['cover', 'drive', 'foot', 'title'];

@@ -1,107 +1,91 @@
-// SOLMAR NIGHTS v2.3 — config.js
-// Every tunable number for the game lives here. Units are pixels, seconds
-// and radians. Angle 0 points east (+x) and grows clockwise because screen
-// y grows downward. Nothing in this file touches the DOM or the network.
+// SOLMAR NIGHTS — config.js
+// Every tunable number for the game lives here so the other modules stay
+// free of magic constants. Nothing in this file touches the DOM or the
+// network; it is pure data plus a few tiny lookup helpers.
 
-export const VIEW_W = 1280;
-export const VIEW_H = 720;
-export const STEP = 1 / 60;
-export const MAX_FRAME = 0.25;
+export const WORLD = 3840; // city is WORLD x WORLD world units
+export const ROAD_W = 96; // width of a road, kerb to kerb
+export const GRID = 480; // distance between road centrelines
+export const ROAD0 = 240; // centreline of the first road (both axes)
+export const ROAD_COUNT = 8; // roads per axis: 240 .. 3600
 
-// The city is a 3840x3840 island. Roads run on a 480px grid: centres at
-// 480, 960, 1440, 1920, 2400, 2880, 3360 in both directions. The strips
-// outside the outer roads are beach (west), hills (north), docks (east)
-// and the old town (south).
-export const WORLD = 3840;
-export const ROAD_PITCH = 480;
-export const ROAD_W = 96;
-export const LANE = 24;
-export const FIRST_ROAD = 480;
-export const LAST_ROAD = 3360;
-export const ROAD_CENTRES = [480, 960, 1440, 1920, 2400, 2880, 3360];
+// Road centrelines, shared by city generation, traffic and rendering.
+export const ROADS = [];
+for (let i = 0; i < ROAD_COUNT; i++) ROADS.push(ROAD0 + i * GRID);
 
-export const PLAYER = {
-  WALK: 178,
-  SPRINT: 272,
-  RADIUS: 13,
-  MAX_HP: 100,
-  PUNCH_RANGE: 36,
-  PUNCH_DMG: 18,
-  PUNCH_CD: 0.34,
-  SHOT_CD: 0.24,
-  SHOT_RANGE: 480,
-  SHOT_DMG: 34,
-  SHOTGUN_DMG: 26,
-  SHOTGUN_PELLETS: 5,
-  REGEN_DELAY: 6,
-  REGEN_RATE: 5,
-  ARMOR_MAX: 100,
+// Districts, keyed by block column/row. A block is the square between four
+// roads; bx,by run 0..6. The district decides ground colour, building style
+// and how dense the buildings are.
+export const DISTRICTS = {
+  downtown: { name: 'Downtown Solmar', ground: '#3d4a3a', roof: ['#5a6b7d', '#6b7a8c', '#4d5a6b'], tall: true, density: 0.9 },
+  commercial: { name: 'Mercado District', ground: '#4a4436', roof: ['#8c7a5a', '#7d6b4d', '#96855f'], tall: false, density: 0.75 },
+  suburb: { name: 'Palmera Suburb', ground: '#4d6b3f', roof: ['#a85a4a', '#b06a3a', '#96504a'], tall: false, density: 0.55 },
+  marina: { name: 'Marina Bay', ground: '#3a5a66', roof: ['#7d9aa8', '#6b8a99', '#8caab8'], tall: false, density: 0.6 },
+  oldtown: { name: 'Old Town', ground: '#5a4a3a', roof: ['#9a6a3a', '#8a5a30', '#a87a45'], tall: false, density: 0.8 },
+  beach: { name: 'Solmar Beach', ground: '#c2a878', roof: ['#e8d8a8', '#d8c890'], tall: false, density: 0.15 },
+  park: { name: 'Palmera Park', ground: '#3f6b35', roof: ['#5a7d4a'], tall: false, density: 0.05 },
 };
 
-// Vehicle handling. Grip is the whole drift model: lateral velocity decays
-// like exp(-grip*dt); the handbrake swaps in a much lower grip so the car
-// slides. vMax is px/s, accel px/s^2, steer rad/s at full lock.
-export const VEHICLE_TYPES = {
-  sedan:    { accel: 215, vMax: 305, revMax: 95,  brake: 540, coast: 110, steer: 2.7, grip: 8.0, gripHand: 2.4, w: 46, h: 22, hp: 120, mass: 1.0, price: 0 },
-  taxi:     { accel: 205, vMax: 300, revMax: 95,  brake: 540, coast: 110, steer: 2.7, grip: 8.0, gripHand: 2.4, w: 46, h: 22, hp: 120, mass: 1.0, price: 0 },
-  sports:   { accel: 305, vMax: 425, revMax: 110, brake: 640, coast: 90,  steer: 3.1, grip: 9.5, gripHand: 2.6, w: 44, h: 20, hp: 100, mass: 0.9, price: 0 },
-  bike:     { accel: 335, vMax: 435, revMax: 110, brake: 570, coast: 80,  steer: 3.4, grip: 7.5, gripHand: 2.0, w: 32, h: 14, hp: 70,  mass: 0.45, price: 0 },
-  pickup:   { accel: 185, vMax: 275, revMax: 85,  brake: 490, coast: 120, steer: 2.4, grip: 7.0, gripHand: 2.0, w: 50, h: 23, hp: 160, mass: 1.3, price: 0 },
-  van:      { accel: 155, vMax: 245, revMax: 80,  brake: 460, coast: 130, steer: 2.2, grip: 6.5, gripHand: 1.8, w: 54, h: 24, hp: 180, mass: 1.5, price: 0 },
-  delivery: { accel: 170, vMax: 255, revMax: 80,  brake: 480, coast: 125, steer: 2.3, grip: 6.8, gripHand: 1.9, w: 56, h: 24, hp: 200, mass: 1.6, price: 0 },
-  truck:    { accel: 135, vMax: 215, revMax: 70,  brake: 430, coast: 140, steer: 1.9, grip: 6.0, gripHand: 1.6, w: 66, h: 26, hp: 220, mass: 1.9, price: 0 },
-  police:   { accel: 295, vMax: 405, revMax: 110, brake: 650, coast: 95,  steer: 3.2, grip: 9.0, gripHand: 2.6, w: 46, h: 22, hp: 160, mass: 1.1, price: 0 },
-  rival:    { accel: 290, vMax: 410, revMax: 105, brake: 610, coast: 90,  steer: 3.0, grip: 9.2, gripHand: 2.5, w: 44, h: 20, hp: 120, mass: 0.95, price: 0 },
+// Which district a block belongs to. Downtown sits in the middle, the beach
+// hugs the south edge, the marina the east edge, suburb the north-west,
+// old town the south-west, commercial the north-east.
+export function districtAt(bx, by) {
+  if (by >= 6) return 'beach';
+  if (bx >= 6 && by >= 3) return 'marina';
+  if (bx >= 2 && bx <= 4 && by >= 2 && by <= 4) return 'downtown';
+  if (bx <= 1 && by <= 2) return 'suburb';
+  if (bx <= 1 && by >= 4) return 'oldtown';
+  if (bx === 3 && by === 0) return 'park';
+  if (bx >= 5 && by <= 2) return 'commercial';
+  return 'suburb';
+}
+
+// Ten drivable vehicle kinds. len/wid are in world units (top-down), top is
+// max speed in units/second, accel in units/second^2.
+export const VEHICLES = {
+  sedan: { name: 'Solmar Sedan', len: 86, wid: 40, accel: 260, top: 330, reverse: 120, grip: 2.6, price: 1200, colors: ['#c23b2e', '#2e6bc2', '#d8d8d8', '#3a3a3a', '#2e8c5a'] },
+  sport: { name: 'Viento GT', len: 88, wid: 40, accel: 420, top: 470, reverse: 140, grip: 3.4, price: 8500, colors: ['#e8b81a', '#c2181a', '#18a8c2', '#f0f0f0'] },
+  taxi: { name: 'Solmar Cab', len: 86, wid: 40, accel: 280, top: 340, reverse: 120, grip: 2.7, price: 2200, colors: ['#f2c018'] },
+  van: { name: 'Cargo Van', len: 104, wid: 46, accel: 200, top: 280, reverse: 110, grip: 2.2, price: 3200, colors: ['#d8d8d8', '#4a6b8c', '#8c8c8c'] },
+  pickup: { name: 'Rancho Pickup', len: 96, wid: 44, accel: 300, top: 350, reverse: 130, grip: 2.8, price: 3800, colors: ['#7a3a1a', '#2e5a3a', '#5a5a5a'] },
+  bike: { name: 'Falcon Bike', len: 64, wid: 22, accel: 460, top: 500, reverse: 60, grip: 4.2, price: 4200, colors: ['#c2181a', '#1a1a1a', '#2e6bc2'] },
+  police: { name: 'SMPD Interceptor', len: 88, wid: 42, accel: 380, top: 440, reverse: 140, grip: 3.2, price: 0, colors: ['#1a2a4a'] },
+  muscle: { name: 'Barracuda Muscle', len: 92, wid: 44, accel: 360, top: 400, reverse: 130, grip: 2.9, price: 6100, colors: ['#5a1a8c', '#c25a1a', '#1a1a1a'] },
+  coupe: { name: 'Luna Coupe', len: 84, wid: 40, accel: 320, top: 380, reverse: 120, grip: 3.0, price: 5400, colors: ['#e88ca8', '#3a8c8c', '#d8d8d8'] },
+  delivery: { name: 'Torta Truck', len: 116, wid: 48, accel: 180, top: 260, reverse: 100, grip: 2.0, price: 2800, colors: ['#e8e8e8', '#c2a018'] },
+};
+export const VEHICLE_KEYS = Object.keys(VEHICLES);
+
+// Weapons. rate is seconds between shots, range in world units.
+export const WEAPONS = {
+  fist: { name: 'Fists', dmg: 25, rate: 0.45, range: 46, ammo: Infinity, price: 0, auto: false },
+  pistol: { name: 'P9 Pistol', dmg: 34, rate: 0.28, range: 520, ammo: 12, price: 450, auto: false },
+  shotgun: { name: 'Scattergun', dmg: 22, rate: 0.85, range: 320, ammo: 6, price: 900, auto: false, pellets: 6 },
+};
+export const WEAPON_KEYS = Object.keys(WEAPONS);
+
+// Shops placed by the city generator (one of each kind, plus extras).
+export const SHOP_KINDS = {
+  gun: { name: 'Iron & Lead Guns', color: '#c23b2e', blurb: 'F — buy weapons & ammo' },
+  spray: { name: 'Chroma Spray Shop', color: '#2e8cc2', blurb: 'F — repaint car ($150), clears CAR evidence' },
+  diner: { name: "Rosa's Diner", color: '#e8b81a', blurb: 'F — eat ($25), restores health' },
+  clothes: { name: 'Vestir Clothing', color: '#b83a8c', blurb: 'F — change outfit ($80), clears OUTFIT evidence' },
+  armor: { name: 'SafeGuard Armor', color: '#3a8c5a', blurb: 'F — body armor ($200)' },
 };
 
-export const VEHICLE_NAMES = {
-  sedan: 'Solmar Sedan', taxi: 'City Taxi', sports: 'Vortex GT', bike: 'Street Bike',
-  pickup: 'Dune Pickup', van: 'Cargo Van', delivery: 'Courier Van', truck: 'Haul Truck',
-  police: 'SPD Interceptor', rival: 'Kings Runner',
-};
+// Story missions. Each step is checked by missions.js; the fields are data,
+// the logic lives there.
+export const MISSIONS = [
+  { id: 1, title: 'Welcome to Solmar', giver: 'Mara Solis', text: 'Drive to the Mercado meet and pick up the package.', reward: 300, unlock: 'pistol', steps: [{ type: 'goto', x: 2640, y: 720, label: 'Meet Mara at Mercado' }, { type: 'pickup', x: 2640, y: 720, label: 'Grab the package' }] },
+  { id: 2, title: 'Cab Fare', giver: 'Mara Solis', text: 'Steal a cab and drop three fares around town.', reward: 450, unlock: null, steps: [{ type: 'fare', count: 3, label: 'Complete 3 taxi fares' }] },
+  { id: 3, title: 'Salt in the Wound', giver: 'Mara Solis', text: 'The Salt Kings are moving product through Old Town. Hit their runners.', reward: 700, unlock: 'shotgun', steps: [{ type: 'kill', count: 5, label: 'Take out 5 Salt Kings runners' }] },
+  { id: 4, title: 'Hot Wheels', giver: 'Mara Solis', text: 'Steal the Viento GT from the Marina showroom and lose the cops.', reward: 900, unlock: 'sport', steps: [{ type: 'steal', kind: 'sport', label: 'Steal the Viento GT' }, { type: 'escape', label: 'Lose your wanted level' }] },
+  { id: 5, title: 'The Last Delivery', giver: 'Mara Solis', text: 'Deliver the van to the beach house. The Kings will try to stop you.', reward: 1100, unlock: null, steps: [{ type: 'deliver', x: 1200, y: 3600, label: 'Deliver the van to the beach house' }] },
+  { id: 6, title: 'Kings Fall', giver: 'Mara Solis', text: 'Ambush the Salt Kings convoy on the east highway.', reward: 1400, unlock: 'muscle', steps: [{ type: 'kill', count: 8, label: 'Wreck the convoy (8 gang members)' }] },
+  { id: 7, title: 'Storm Warning', giver: 'Mara Solis', text: 'Survive the hit squads until dawn. Enforcers lead every third wave.', reward: 1800, unlock: null, steps: [{ type: 'survive', waves: 4, label: 'Survive 4 hit-squad waves' }] },
+  { id: 8, title: 'Paying the Debt', giver: 'Mara Solis', text: 'Finale: end the Salt Kings at Marina Pier. Bring it home, Dana.', reward: 3000, unlock: null, steps: [{ type: 'goto', x: 3600, y: 2640, label: 'Go to Marina Pier' }, { type: 'kill', count: 10, label: 'Defeat the Salt Kings at the pier' }] },
+];
 
-// Wanted tuning. Heat is a 0..100 meter per star band; a crime adds heat
-// only when a witness (pedestrian or cop) can see it or a camera does.
-// CHASE_CARS is how many police cars hunt at each star level.
-export const WANTED = {
-  HEAT_PER_STAR: [0, 25, 50, 70, 85, 100, 115],
-  CHASE_CARS: [0, 1, 2, 3, 4, 5, 6],
-  HIDE_TIME: [0, 20, 28, 38, 52, 70, 90],
-  SIGHT_RANGE: 540,
-  CRIME_RADIUS: 430,
-  HELI_STARS: 5,
-  HELI_LEAVE_STARS: 3,
-  HELI_SPOT_RADIUS: 270,
-  HELI_COVER_SECONDS: 6,
-  CRIME: { stealCar: 26, punch: 14, shoot: 26, killPed: 42, killCop: 65, runOver: 24, explosion: 30, robbery: 55 },
-  // Evidence: each kind of proof the police hold about you. Each clears
-  // its own way (see wanted.js): change outfit, change car, leave the hot
-  // area, wait out the CCTV tape, ditch the weapon.
-  EVIDENCE_KINDS: ['cctv', 'outfit', 'face', 'car', 'weapon'],
-};
-
-export const WEATHER = {
-  CLEAR: 'clear', RAIN: 'rain', FOG: 'fog',
-  RAIN_GRIP: 0.78, FOG_GRIP: 0.9,
-};
-
-// Money and progression.
-export const ECONOMY = {
-  START_CASH: 120,
-  TAXI_FARE: 45,
-  PACKAGE_CASH: 40,
-  PISTOL_PRICE: 350,
-  SHOTGUN_PRICE: 800,
-  AMMO_PRICE: 60,
-  AMMO_PACK: 24,
-  ARMOR_PRICE: 220,
-  SPRAY_PRICE: 150,
-  HEAL_PRICE: 80,
-  BRIBE_PER_STAR: 200,
-  PICKUP_COUNT: 12,
-};
-
-export const DAY_LENGTH = 240; // seconds per full day/night cycle
-export const SAVE_KEY = 'solmar-nights-save-v23';
-export const SETTINGS_KEY = 'solmar-nights-settings-v23';
-export const BEST_KEY = 'solmar-nights-best-v23';
+export const HIDDEN_PACKAGES = 12;
+export const START_MONEY = 250;
+export const SAVE_KEY = 'solmar-nights-save-v2';

@@ -1,11 +1,10 @@
-// SOLMAR NIGHTS v2.3 — random.js
-// A small seeded generator (mulberry32) so the city, the traffic and the
-// screenshot scenes are identical for a given seed, plus the math helpers
-// every other module shares. No DOM, no network, no Date.now() inside the
-// generator — determinism is the point.
+// SOLMAR NIGHTS — random.js
+// Deterministic seeded RNG (mulberry32) plus small helpers. The whole city,
+// traffic and mission placement derive from one seed so a given seed always
+// builds the same Solmar. Nothing here is cryptographic.
 
-export function createRandom(seed) {
-  let a = (seed >>> 0) || 1;
+export function makeRng(seed) {
+  let a = seed >>> 0;
   return function next() {
     a |= 0; a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
@@ -14,44 +13,57 @@ export function createRandom(seed) {
   };
 }
 
-export function makeRng(seed) {
-  const next = createRandom(seed);
-  return {
-    next,
-    range(min, max) { return min + next() * (max - min); },
-    int(min, max) { return Math.floor(min + next() * (max - min + 1)); },
-    pick(arr) { return arr[Math.floor(next() * arr.length)]; },
-    chance(p) { return next() < p; },
-  };
-}
-
-export const clamp = (v, min, max) => (v < min ? min : v > max ? max : v);
-export const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
-export const lerp = (a, b, t) => a + (b - a) * t;
-export const smoothstep = (a, b, x) => {
-  const t = clamp01((x - a) / (b - a));
-  return t * t * (3 - 2 * t);
-};
-export const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
-export const angleTo = (x1, y1, x2, y2) => Math.atan2(y2 - y1, x2 - x1);
-export const angleDiff = (a, b) => {
-  let d = (b - a) % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
-  return d;
-};
-export const TAU = Math.PI * 2;
-
-export function gauss(rng) {
-  // Approximate a normal draw from two uniform draws.
-  return (rng.next() + rng.next() + rng.next() - 1.5) * 2;
-}
-
-export function hashSeed(str) {
+// Hash a string into a 32-bit seed.
+export function seedFromString(str) {
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
+}
+
+export function range(rng, min, max) {
+  return min + rng() * (max - min);
+}
+
+export function int(rng, min, max) {
+  return Math.floor(range(rng, min, max + 1));
+}
+
+export function pick(rng, arr) {
+  return arr[Math.floor(rng() * arr.length)];
+}
+
+export function pickWeighted(rng, entries) {
+  // entries: [[value, weight], ...]
+  let total = 0;
+  for (const [, w] of entries) total += w;
+  let roll = rng() * total;
+  for (const [v, w] of entries) {
+    roll -= w;
+    if (roll <= 0) return v;
+  }
+  return entries[entries.length - 1][0];
+}
+
+export function chance(rng, p) {
+  return rng() < p;
+}
+
+export function shuffle(rng, arr) {
+  const out = arr.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+export function clamp(v, min, max) {
+  return v < min ? min : v > max ? max : v;
+}
+
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
 }

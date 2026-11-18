@@ -1,218 +1,184 @@
-// SOLMAR NIGHTS v2.3 — city.js
-// The city is generated, not drawn: a seeded generator lays out the road
-// grid, the blocks between the roads, and the buildings, parks, palms and
-// plazas inside each block. Districts are decided by position, so the
-// north-east is towers, the centre is shops, the south is houses and the
-// west edge is beach. Landmarks are fixed spots so missions, shops and the
-// story always know where to send the player.
+// SOLMAR NIGHTS — city.js
+// Procedural Solmar: a road grid the traffic can actually drive, with every
+// building placed strictly inside a block interior — never on a road and
+// never straddling an intersection. That placement rule is the whole point:
+// a building on a road blocks every car behind it forever.
+//
+// Layout: 8 vertical + 8 horizontal roads (centrelines 240..3600, step 480,
+// 96 wide). Between neighbouring roads sits a 384-wide block; buildings live
+// in that block inset a further 40 units from the kerb. The south edge is a
+// beach, the east edge a marina with a pier, one block is a park.
 
-import { FIRST_ROAD, LAST_ROAD, ROAD_CENTRES, ROAD_PITCH, ROAD_W, WORLD } from './config.js';
-import { makeRng } from './random.js';
+import { WORLD, ROAD_W, ROADS, DISTRICTS, districtAt } from './config.js';
+import { range, int, pick, chance } from './random.js';
 
-export { ROAD_CENTRES };
+const HALF_ROAD = ROAD_W / 2; // 48
+const BLOCK_INSET = 40; // building margin inside the block interior
 
-export const DISTRICTS = {
-  downtown: { name: 'Downtown', base: '#3a3f5c', roof: '#565d7d' },
-  commercial: { name: 'Mercado District', base: '#4a3a52', roof: '#6b5570' },
-  suburb: { name: 'Palmera Suburb', base: '#3d4a3a', roof: '#5a6b52' },
-  marina: { name: 'Marina & Docks', base: '#2f4a55', roof: '#3f6b78' },
-  oldtown: { name: 'Old Town', base: '#54432f', roof: '#6f5a3d' },
-  beach: { name: 'Solmar Beach', base: '#b89a5e', roof: '#cbb37a' },
-};
-
-export function districtAt(x, y) {
-  if (x < 300) return 'beach';
-  if (x > 3300) return 'marina';
-  if (y < 900 && x > 1900) return 'downtown';
-  if (y < 1500) return 'commercial';
-  if (y > 2900) return 'oldtown';
-  if (x < 1300 && y > 1900) return 'suburb';
-  return 'commercial';
-}
-
-export function districtNameAt(x, y) {
-  return DISTRICTS[districtAt(x, y)].name;
-}
-
-// The Salt Kings run the east strip: on their turf bystanders look the
-// other way a little longer and gang waves spawn closer.
-export function isSaltKingsTurf(x, y) {
-  return x > 2900 && y > 1400 && y < 2900;
-}
-
-// Landmarks the story and the shops live at. Fixed spots, so the missions
-// and the save file can always find them again.
-export const LANDMARKS = {
-  home: { x: 960, y: 2880, name: "Dana's Apartment", kind: 'home' },
-  maraOffice: { x: 1920, y: 960, name: "Mara's Office", kind: 'office' },
-  gunStore: { x: 1440, y: 1440, name: 'Ironworks Arms', kind: 'gun' },
-  sprayShop: { x: 2880, y: 1920, name: 'Solmar Spray & Paint', kind: 'spray' },
-  diner: { x: 960, y: 1920, name: 'Sunset Diner', kind: 'diner' },
-  clothes: { x: 2400, y: 1440, name: 'Marina Threads', kind: 'clothes' },
-  hospital: { x: 1920, y: 2400, name: 'Solmar General', kind: 'hospital' },
-  depot: { x: 3360, y: 2880, name: 'Solmar Courier Depot', kind: 'depot' },
-  pier: { x: 3600, y: 960, name: 'Marina Pier', kind: 'pier' },
-  market: { x: 1440, y: 2400, name: 'Mercado Central', kind: 'market' },
-  shopA: { x: 2400, y: 960, name: 'Corner Mart — North', kind: 'shop' },
-  shopB: { x: 960, y: 1440, name: 'Corner Mart — West', kind: 'shop' },
-  park: { x: 1920, y: 1920, name: 'Plaza del Sol', kind: 'park' },
-  beachBar: { x: 360, y: 1920, name: 'Tide Bar', kind: 'bar' },
-  stadium: { x: 2880, y: 2880, name: 'Solmar Arena', kind: 'stadium' },
-};
-
-export function landmarkByKind(kind) {
-  return Object.values(LANDMARKS).find((l) => l.kind === kind) ?? LANDMARKS.home;
-}
-
-export function createCity(seed) {
-  const rng = makeRng(seed);
-  const buildings = [];
-  const palms = [];
-  const parks = [];
-  const plazas = [];
-  const cameras = []; // CCTV positions on downtown intersections
-
-  // Blocks sit BETWEEN the roads: block centres are at 720, 1200, ...
-  // (road centre + half a pitch). Buildings live inside the block
-  // interior only — a building centred on a road centre would sit on
-  // the road itself and block traffic, which is exactly what the first
-  // version of this generator did by mistake.
-  for (let bx = 0; bx < 6; bx++) {
-    for (let by = 0; by < 6; by++) {
-      const cx = FIRST_ROAD + bx * ROAD_PITCH + ROAD_PITCH / 2;
-      const cy = FIRST_ROAD + by * ROAD_PITCH + ROAD_PITCH / 2;
-      const district = districtAt(cx, cy);
-      // A few blocks are parks or plazas instead of buildings.
-      const roll = rng.next();
-      if (roll < 0.10) {
-        parks.push({ x: cx, y: cy, r: 150, trees: rng.int(6, 14) });
-        for (let i = 0; i < 10; i++) {
-          palms.push({ x: cx + rng.range(-140, 140), y: cy + rng.range(-140, 140), s: rng.range(0.8, 1.3) });
-        }
-        continue;
-      }
-      if (roll < 0.16) {
-        plazas.push({ x: cx, y: cy, r: 130 });
-        continue;
-      }
-      const tall = district === 'downtown';
-      const count = tall ? rng.int(1, 2) : rng.int(2, 4);
-      for (let i = 0; i < count; i++) {
-        const w = tall ? rng.range(150, 210) : rng.range(90, 170);
-        const h = tall ? rng.range(150, 210) : rng.range(80, 150);
-        // Keep the whole building inside the block interior: the road
-        // strip (48px half-width) plus sidewalk (14px) must stay clear,
-        // so no building edge crosses 178px from the block centre.
-        const x = cx + rng.range(-170 + w / 2, 170 - w / 2);
-        const y = cy + rng.range(-170 + h / 2, 170 - h / 2);
-        // Keep buildings from overlapping each other in the same block.
-        let clash = false;
-        for (const b of buildings) {
-          if (Math.abs(b.x - x) < (b.w + w) / 2 + 12 && Math.abs(b.y - y) < (b.h + h) / 2 + 12) { clash = true; break; }
-        }
-        if (clash) continue;
-        buildings.push({
-          x, y, w, h,
-          height: tall ? rng.range(60, 130) : rng.range(12, 42),
-          district,
-          shade: rng.range(0.85, 1.12),
-          neon: rng.chance(0.35),
-          hue: rng.int(0, 5),
-        });
-      }
-      // Palms line the sidewalks in the suburb and along the beach.
-      if (district === 'suburb' || district === 'beach') {
-        for (let i = 0; i < 4; i++) {
-          palms.push({ x: cx + rng.range(-180, 180), y: cy + rng.range(-180, 180), s: rng.range(0.8, 1.4) });
-        }
-      }
-    }
-  }
-
-  // CCTV cameras watch the downtown intersections and the market.
-  for (const [x, y] of [[1920, 960], [2400, 960], [1920, 1440], [2400, 1440], [1440, 2400], [2880, 1920]]) {
-    cameras.push({ x, y, r: 260 });
-  }
-
-  // Fountain positions in the parks.
-  const fountains = parks.map((p) => ({ x: p.x, y: p.y, r: 34 }));
-
-  return { seed, buildings, palms, parks, plazas, cameras, fountains };
-}
-
-export function isWater(x, y) {
-  return x < 150 || x > WORLD - 150;
-}
-
-export function isBeach(x, y) {
-  return x >= 150 && x < 320;
-}
-
-export function circleBlocked(city, x, y, r) {
-  if (x < 40 + r || x > WORLD - 40 - r || y < 40 + r || y > WORLD - 40 - r) return true;
-  if (isWater(x, y)) return true;
-  for (const b of city.buildings) {
-    const dx = Math.abs(x - b.x) - b.w / 2;
-    const dy = Math.abs(y - b.y) - b.h / 2;
-    const cx = Math.max(dx, 0);
-    const cy = Math.max(dy, 0);
-    if (cx * cx + cy * cy < r * r) return true;
+export function isRoadPoint(x, y) {
+  for (const r of ROADS) {
+    if (Math.abs(x - r) < HALF_ROAD || Math.abs(y - r) < HALF_ROAD) return true;
   }
   return false;
 }
 
-// Push a circle entity out of buildings / water so it never gets stuck.
-export function resolveCircle(city, ent, r) {
-  for (const b of city.buildings) {
-    const dx = ent.x - b.x;
-    const dy = ent.y - b.y;
-    const ox = b.w / 2 + r - Math.abs(dx);
-    const oy = b.h / 2 + r - Math.abs(dy);
-    if (ox > 0 && oy > 0) {
-      if (ox < oy) ent.x = b.x + Math.sign(dx || 1) * (b.w / 2 + r);
-      else ent.y = b.y + Math.sign(dy || 1) * (b.h / 2 + r);
+// Nearest point on the road network to (x,y), snapped to a lane centre.
+export function nearestRoadPoint(x, y) {
+  let best = null, bestD = Infinity;
+  for (const r of ROADS) {
+    for (const [px, py] of [[r, y], [x, r]]) {
+      const d = (px - x) * (px - x) + (py - y) * (py - y);
+      if (d < bestD) { bestD = d; best = { x: px, y: py }; }
     }
   }
-  ent.x = Math.max(60, Math.min(WORLD - 60, ent.x));
-  ent.y = Math.max(60, Math.min(WORLD - 60, ent.y));
-}
-
-export function isOnRoad(x, y) {
-  const onX = ROAD_CENTRES.some((c) => Math.abs(x - c) < ROAD_W / 2);
-  const onY = ROAD_CENTRES.some((c) => Math.abs(y - c) < ROAD_W / 2);
-  return onX || onY;
-}
-
-export function nearestRoadCentre(v) {
-  let best = ROAD_CENTRES[0];
-  for (const c of ROAD_CENTRES) if (Math.abs(c - v) < Math.abs(best - v)) best = c;
   return best;
 }
 
-export function nearestRoadPoint(x, y) {
-  const cx = nearestRoadCentre(x);
-  const cy = nearestRoadCentre(y);
-  // Snap to whichever road axis is closer.
-  if (Math.abs(x - cx) < Math.abs(y - cy)) return { x: cx, y };
-  return { x, y: cy };
-}
-
-export function randomSidewalkSpot(city, rng, cx, cy, radius) {
-  for (let tries = 0; tries < 20; tries++) {
-    const x = cx + rng.range(-radius, radius);
-    const y = cy + rng.range(-radius, radius);
-    if (isOnRoad(x, y)) continue;
-    if (circleBlocked(city, x, y, 14)) continue;
-    return { x, y };
+// Is (x,y) on a road centreline's lane, and which axis?
+export function roadAxisAt(x, y) {
+  let dv = Infinity, dh = Infinity;
+  for (const r of ROADS) {
+    dv = Math.min(dv, Math.abs(x - r));
+    dh = Math.min(dh, Math.abs(y - r));
   }
-  return { x: cx, y: cy };
+  if (dv < HALF_ROAD && dv <= dh) return 'v';
+  if (dh < HALF_ROAD) return 'h';
+  return null;
 }
 
-// Traffic-light phase for an intersection: returns 'green' or 'red' for
-// the east-west direction at time t (north-south gets the opposite).
-export function lightPhase(x, y, t) {
-  const idx = (Math.round(x / ROAD_PITCH) + Math.round(y / ROAD_PITCH)) % 2;
-  const cycle = 14;
-  const phase = (t + idx * 7) % cycle;
-  return phase < 7 ? 'green' : 'red';
+export function buildCity(rng) {
+  const buildings = [];
+  const trees = [];
+  const parks = [];
+  const lights = []; // traffic lights, one per intersection approach set
+  const lamps = [];
+
+  // ---- Buildings: one or two per block, deep inside the block interior. ----
+  for (let bx = 0; bx < 7; bx++) {
+    for (let by = 0; by < 7; by++) {
+      const district = districtAt(bx, by);
+      const d = DISTRICTS[district];
+      const x0 = ROADS[bx] + HALF_ROAD + BLOCK_INSET;
+      const x1 = ROADS[bx + 1] - HALF_ROAD - BLOCK_INSET;
+      const y0 = ROADS[by] + HALF_ROAD + BLOCK_INSET;
+      const y1 = ROADS[by + 1] - HALF_ROAD - BLOCK_INSET;
+      const bw = x1 - x0, bh = y1 - y0;
+
+      if (district === 'park') {
+        parks.push({ x: x0, y: y0, w: bw, h: bh });
+        for (let i = 0; i < 26; i++) {
+          trees.push({ x: range(rng, x0 + 10, x1 - 10), y: range(rng, y0 + 10, y1 - 10), r: range(rng, 10, 18) });
+        }
+        continue;
+      }
+      if (district === 'beach') {
+        for (let i = 0; i < 8; i++) {
+          trees.push({ x: range(rng, x0, x1), y: range(rng, y0, y1), r: range(rng, 12, 18), palm: true });
+        }
+        continue;
+      }
+      // How many buildings fit this block? Downtown gets a tower cluster.
+      const count = district === 'downtown' ? int(rng, 2, 4) : (chance(rng, d.density) ? int(rng, 1, 2) : 0);
+      if (count === 0) {
+        // Empty lot: a few trees and a parking patch.
+        for (let i = 0; i < 3; i++) trees.push({ x: range(rng, x0, x1), y: range(rng, y0, y1), r: range(rng, 10, 16) });
+        continue;
+      }
+      const cols = count >= 3 ? 2 : 1;
+      const rows = Math.ceil(count / cols);
+      const cellW = bw / cols, cellH = bh / rows;
+      let placed = 0;
+      for (let cx = 0; cx < cols && placed < count; cx++) {
+        for (let cy = 0; cy < rows && placed < count; cy++) {
+          const w = district === 'downtown' ? range(rng, 90, 130) : range(rng, 100, 170);
+          const h = district === 'downtown' ? range(rng, 90, 130) : range(rng, 90, 150);
+          const x = x0 + cx * cellW + (cellW - w) / 2 + range(rng, -8, 8);
+          const y = y0 + cy * cellH + (cellH - h) / 2 + range(rng, -8, 8);
+          buildings.push({
+            x, y, w, h,
+            district,
+            floors: district === 'downtown' ? int(rng, 8, 22) : int(rng, 1, 3),
+            roof: pick(rng, d.roof),
+            wall: shadeRoof(pick(rng, d.roof)),
+          });
+          placed++;
+        }
+      }
+      // Street trees around the block edge (on the sidewalk, never on road).
+      for (let i = 0; i < 4; i++) {
+        trees.push({ x: range(rng, x0 - 20, x1 + 20), y: y0 - 22, r: range(rng, 9, 14) });
+        trees.push({ x: range(rng, x0 - 20, x1 + 20), y: y1 + 22, r: range(rng, 9, 14) });
+      }
+    }
+  }
+
+  // ---- Traffic lights: one state per intersection, shared by all cars. ----
+  for (let ix = 0; ix < ROADS.length; ix++) {
+    for (let iy = 0; iy < ROADS.length; iy++) {
+      lights.push({ x: ROADS[ix], y: ROADS[iy], phase: (ix * 7 + iy * 3) % 2, timer: range(rng, 0, 4) });
+      lamps.push({ x: ROADS[ix] + 62, y: ROADS[iy] + 62 });
+      lamps.push({ x: ROADS[ix] - 62, y: ROADS[iy] - 62 });
+    }
+  }
+
+  // ---- Shops: fixed, memorable corners. ----
+  const shops = [
+    { kind: 'gun', name: 'Iron & Lead Guns', x: 1200, y: 1200 },
+    { kind: 'spray', name: 'Chroma Spray Shop', x: 2640, y: 1680 },
+    { kind: 'diner', name: "Rosa's Diner", x: 720, y: 2640 },
+    { kind: 'clothes', name: 'Vestir Clothing', x: 2160, y: 720 },
+    { kind: 'armor', name: 'SafeGuard Armor', x: 3120, y: 1200 },
+    { kind: 'diner', name: 'Pier Cafe', x: 3600, y: 2640 },
+  ];
+
+  // ---- Hidden packages: tucked behind buildings, in alleys, on the pier. ----
+  const packages = [];
+  const used = new Set();
+  let guard = 0;
+  while (packages.length < 12 && guard++ < 400) {
+    const b = pick(rng, buildings);
+    const side = int(rng, 0, 3);
+    let px, py;
+    if (side === 0) { px = b.x - 26; py = range(rng, b.y, b.y + b.h); }
+    else if (side === 1) { px = b.x + b.w + 26; py = range(rng, b.y, b.y + b.h); }
+    else if (side === 2) { px = range(rng, b.x, b.x + b.w); py = b.y - 26; }
+    else { px = range(rng, b.x, b.x + b.w); py = b.y + b.h + 26; }
+    const key = `${Math.round(px / 40)}:${Math.round(py / 40)}`;
+    if (used.has(key) || isRoadPoint(px, py)) continue;
+    used.add(key);
+    packages.push({ x: px, y: py, found: false });
+  }
+  // Two packages on the marina pier, easy to spot, hard to reach unnoticed.
+  packages.push({ x: 3720, y: 2520, found: false });
+  packages.push({ x: 3740, y: 2760, found: false });
+  while (packages.length > 12) packages.pop();
+
+  // Marina pier: a wooden walkway east of the last road, over the water.
+  const pier = { x: 3600, y: 2400, w: 200, h: 480 };
+
+  // Player spawn: outside the diner in Old Town, on the sidewalk.
+  const spawn = { x: 720, y: 2560, angle: -Math.PI / 2 };
+
+  return { buildings, trees, parks, lights, lamps, shops, packages, pier, spawn };
+}
+
+function shadeRoof(hex) {
+  // Darken a roof colour for the wall tone.
+  const n = parseInt(hex.slice(1), 16);
+  const r = Math.max(0, ((n >> 16) & 255) - 28);
+  const g = Math.max(0, ((n >> 8) & 255) - 28);
+  const b = Math.max(0, (n & 255) - 28);
+  return `rgb(${r},${g},${b})`;
+}
+
+// The nearest building to a point (for package hints / cover checks).
+export function nearestBuilding(city, x, y) {
+  let best = null, bestD = Infinity;
+  for (const b of city.buildings) {
+    const cx = Math.max(b.x, Math.min(x, b.x + b.w));
+    const cy = Math.max(b.y, Math.min(y, b.y + b.h));
+    const d = (cx - x) * (cx - x) + (cy - y) * (cy - y);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  return best;
 }
