@@ -1,6 +1,9 @@
-// SOLMAR NIGHTS — input.js
-// Keyboard + mouse, read once a frame. Actions are edge-triggered (pressed
-// this frame) so menus and car entry never double-fire.
+// SOLMAR NIGHTS v2.3 — input.js
+// Keyboard + mouse, read once a frame. Movement axes are analogue-style
+// (-1..1) from WASD/arrows; actions are edge-triggered bit flags so a
+// single keypress fires exactly one event even if the frame rate wobbles.
+// The game never reads keys directly — it reads this object, which is why
+// the screenshot autopilot can drive the same world with a fake input.
 
 export const ACTION_CONFIRM = 1;
 export const ACTION_PAUSE = 2;
@@ -10,106 +13,91 @@ export const ACTION_HORN = 16;
 export const ACTION_INTERACT = 32;
 export const ACTION_SETTINGS = 64;
 export const ACTION_MINIMAP = 128;
+export const ACTION_WEAPON = 256;
+export const ACTION_SPRINT = 512;
 
-const KEYMAP = {
-  KeyW: 'up', ArrowUp: 'up',
-  KeyS: 'down', ArrowDown: 'down',
-  KeyA: 'left', ArrowLeft: 'left',
-  KeyD: 'right', ArrowRight: 'right',
-  ShiftLeft: 'sprint', ShiftRight: 'sprint',
-  Space: 'attack',
-  KeyE: 'enter', KeyC: 'enter',
-  KeyF: 'interact', KeyV: 'interact',
-  KeyQ: 'horn',
-  KeyM: 'mute',
-  KeyO: 'settings',
-  KeyN: 'minimap',
-  KeyP: 'pause', Escape: 'pause',
-  Enter: 'confirm',
+const KEY_ACTIONS = {
+  Enter: ACTION_CONFIRM,
+  Space: ACTION_CONFIRM,
+  Escape: ACTION_PAUSE,
+  KeyP: ACTION_PAUSE,
+  KeyE: ACTION_ENTER_CAR,
+  KeyF: ACTION_INTERACT,
+  KeyH: ACTION_HORN,
+  KeyO: ACTION_SETTINGS,
+  KeyN: ACTION_MINIMAP,
+  KeyQ: ACTION_WEAPON,
 };
 
 export function createInput(canvas) {
   const keys = new Set();
-  const pressed = new Set();
-  const mouse = { x: 0, y: 0, down: false, clicked: false };
+  let queued = 0;
   let anyKey = false;
+  const mouse = { x: 640, y: 360, down: false, clicked: false };
 
   function onKeyDown(e) {
-    const name = KEYMAP[e.code];
-    if (name) {
-      if (!keys.has(name)) pressed.add(name);
-      keys.add(name);
-      anyKey = true;
-      // Every game key swallows the browser's default: without this, Space
-      // and the arrow keys scroll the page (and Space clicks a focused
-      // button) while the game is running.
-      e.preventDefault();
-    }
+    if (e.repeat) return;
+    keys.add(e.code);
+    const bit = KEY_ACTIONS[e.code];
+    if (bit) queued |= bit;
+    anyKey = true;
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
   }
-  function onKeyUp(e) {
-    const name = KEYMAP[e.code];
-    if (name) keys.delete(name);
-  }
+  function onKeyUp(e) { keys.delete(e.code); }
   function onMouseMove(e) {
-    const rect = canvas.getBoundingClientRect();
-    mouse.x = e.clientX - rect.left;
-    mouse.y = e.clientY - rect.top;
+    const r = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - r.left;
+    mouse.y = e.clientY - r.top;
   }
   function onMouseDown(e) {
-    if (e.button === 0) {
-      mouse.down = true;
-      mouse.clicked = true;
-      anyKey = true;
-    }
+    onMouseMove(e);
+    mouse.down = true;
+    mouse.clicked = true;
+    queued |= ACTION_ATTACK;
   }
-  function onMouseUp(e) {
-    if (e.button === 0) mouse.down = false;
-  }
-  function onBlur() {
-    keys.clear();
-    mouse.down = false;
-  }
+  function onMouseUp() { mouse.down = false; }
+  function onBlur() { keys.clear(); mouse.down = false; }
 
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
   canvas.addEventListener('mousemove', onMouseMove);
   canvas.addEventListener('mousedown', onMouseDown);
   window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('blur', onBlur);
 
   return {
     mouse,
-    /** -1/0/1 drive + strafe axes for this frame. */
+    down(code) { return keys.has(code); },
     axes() {
-      const x = (keys.has('right') ? 1 : 0) - (keys.has('left') ? 1 : 0);
-      const y = (keys.has('down') ? 1 : 0) - (keys.has('up') ? 1 : 0);
-      return { x, y, sprint: keys.has('sprint') };
+      let x = 0; let y = 0;
+      if (keys.has('KeyA') || keys.has('ArrowLeft')) x -= 1;
+      if (keys.has('KeyD') || keys.has('ArrowRight')) x += 1;
+      if (keys.has('KeyW') || keys.has('ArrowUp')) y -= 1;
+      if (keys.has('KeyS') || keys.has('ArrowDown')) y += 1;
+      const sprint = keys.has('ShiftLeft') || keys.has('ShiftRight');
+      return { x, y, sprint };
     },
-    down(name) {
-      return keys.has(name);
-    },
-    /** Edge-triggered actions since the last takeActions call. */
+    // Edge-triggered actions since the last call; calling twice in a
+    // frame returns the bits once, then zero.
     takeActions() {
-      let a = 0;
-      if (pressed.has('confirm')) a |= ACTION_CONFIRM;
-      if (pressed.has('pause')) a |= ACTION_PAUSE;
-      if (pressed.has('enter')) a |= ACTION_ENTER_CAR;
-      if (pressed.has('attack')) a |= ACTION_ATTACK;
-      if (pressed.has('interact')) a |= ACTION_INTERACT;
-      if (pressed.has('horn')) a |= ACTION_HORN;
-      if (pressed.has('settings')) a |= ACTION_SETTINGS;
-      if (pressed.has('minimap')) a |= ACTION_MINIMAP;
-      pressed.clear();
-      if (mouse.clicked) {
-        a |= ACTION_ATTACK;
-        mouse.clicked = false;
-      }
-      return a;
+      const out = queued;
+      queued = 0;
+      return out;
     },
     consumeAnyKey() {
-      const v = anyKey;
+      const out = anyKey;
       anyKey = false;
-      return v;
+      return out;
+    },
+    // For tests / the autopilot: inject an action bit directly.
+    inject(bit) { queued |= bit; },
+    destroy() {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+      canvas.removeEventListener('mousemove', onMouseMove);
+      canvas.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mouseup', onMouseUp);
     },
   };
 }

@@ -3,21 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Solmar Nights — an open-world crime game in a sun-soaked coastal city: steal cars and the courier van, run seven story jobs, outrun the police and their helicopter through a five-star wanted system.">
+<meta name="description" content="Solmar Nights — an open-world crime game in a sun-soaked coastal city: steal cars, run eight story jobs for fixer Mara Solis, outrun the Solmar police and their helicopter through a six-star wanted system.">
 <meta name="theme-color" content="#2b1055">
 <title>Solmar Nights — Open-World Crime Game</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #14101f; }
   #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
-  /* Read aloud, never shown: the status line screen readers announce. */
   #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  /* Shown only when JavaScript is off: the game cannot run without it. */
   noscript p { position: fixed; inset: 0; display: grid; place-items: center; margin: 0; padding: 2rem; color: #ffe9a8; background: #14101f; font: 18px system-ui, sans-serif; text-align: center; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Solmar Nights: steal cars and the courier van, take seven jobs, outrun the Solmar police and their helicopter, press O for settings"></canvas>
+<canvas id="game" aria-label="Solmar Nights: steal cars, take eight jobs, outrun the Solmar police and their helicopter, press O for settings"></canvas>
 <noscript><p>Solmar Nights needs JavaScript to run. Please enable JavaScript and reload the page.</p></noscript>
 <p id="status" role="status" aria-live="polite"></p>
 <script type="module" src="./src/main.js"></script>

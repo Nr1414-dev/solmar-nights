@@ -1,383 +1,215 @@
-// SOLMAR NIGHTS — missions.js
+// SOLMAR NIGHTS v2.3 — missions.js
 // The story: Dana Reyes, a courier who owes the wrong people money, takes
-// jobs from Mara Solis, a fixer who runs Solmar from a phone booth in
-// Downtown. Six jobs, each a small state machine with its own objective,
-// marker and fail condition. Side work (taxi fares, hidden packages) lives
-// in world.js; this file is only the story chain.
+// jobs for fixer Mara Solis to buy her way out. Eight jobs, each a small
+// state machine with its own objective, timer and payout. Jobs unlock in
+// order; finishing a job pays cash, raises reputation and unlocks the next
+// one plus a perk (a weapon, a vehicle, a contact). The last job ends the
+// campaign arc — the debt is paid and Solmar is Dana's.
 
-import { LANDMARKS, districtNameAt, landmarkByKind } from './city.js';
-import { ECONOMY } from './config.js';
-import { clamp } from './random.js';
-
-const RACE_POINTS = [
-  { x: 960, y: 480 },
-  { x: 3360, y: 960 },
-  { x: 3360, y: 2880 },
-  { x: 960, y: 3360 },
-  { x: 480, y: 1920 },
-  { x: 1920, y: 480 },
-];
-
-const DELIVERY_DROPS = [
-  { x: 300, y: 1680, name: 'Marina Pier' },
-  { x: 2160, y: 700, name: 'Neon Arcade' },
-  { x: 3360, y: 3360, name: 'Old Town' },
-];
-
-const COLLECT_SPOTS = [
-  { x: 300, y: 3360 },
-  { x: 3360, y: 480 },
-  { x: 1920, y: 2880 },
-];
-
-function nearestCar(G) {
-  let best = null;
-  let bd = 1e9;
-  for (const car of G.cars) {
-    if (car.dead || car.ai === 'police') continue;
-    const d = Math.hypot(car.x - G.player.x, car.y - G.player.y);
-    if (d < bd) { bd = d; best = car; }
-  }
-  return best;
-}
+import { LANDMARKS } from './city.js';
+import { dist } from './random.js';
 
 export const MISSIONS = [
-  {
-    id: 'first-wheels',
-    title: 'First Wheels',
-    giver: 'Mara Solis',
-    brief: 'You need wheels before you can work. Take any car on the street — nobody here locks theirs — and bring it to my garage.',
-    reward: 300,
-    start(G) { G.mission.phase = 0; },
-    update(G) {
-      if (G.mission.phase === 0 && G.player.inCar) {
-        G.mission.phase = 1;
-        G.toast = { text: 'Mara: "Good. Now bring it to the garage."', t: 0, dur: 4 };
-      }
-      if (G.mission.phase === 1 && G.player.inCar) {
-        const d = Math.hypot(G.player.x - LANDMARKS.safehouse.x, G.player.y - LANDMARKS.safehouse.y);
-        // Pulling up on the street by the garage counts as bringing it in.
-        if (d < 260) return 'done';
-      }
-      return 'active';
-    },
-    objective(G) {
-      if (G.mission.phase === 0) return 'Steal a car — walk up to one and press E';
-      const d = Math.hypot(G.player.x - LANDMARKS.safehouse.x, G.player.y - LANDMARKS.safehouse.y);
-      return `Drive the car to Mara's garage — ${Math.max(0, Math.round(d / 10) * 10)}m away`;
-    },
-    target(G) {
-      if (G.mission.phase === 0) {
-        const c = nearestCar(G);
-        return c ? { x: c.x, y: c.y } : null;
-      }
-      return { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y };
-    },
-  },
-  {
-    id: 'special-delivery',
-    title: 'Special Delivery',
-    giver: 'Mara Solis',
-    brief: 'A package is waiting at Dock 9. Pick it up and get it to The Palms Hotel. The client pays for speed — you have 100 seconds once it is in your hands.',
-    reward: 600,
-    start(G) { G.mission.phase = 0; G.mission.data.hold = 0; },
-    update(G, dt) {
-      const m = G.mission;
-      if (m.phase === 0) {
-        const d = Math.hypot(G.player.x - LANDMARKS.docks.x, G.player.y - LANDMARKS.docks.y);
-        if (d < 110) {
-          m.data.hold += dt;
-          if (m.data.hold > 1.2) {
-            m.phase = 1;
-            m.timer = 100;
-            G.toast = { text: 'Package secured. 100 seconds — move!', t: 0, dur: 4 };
-          }
-        } else m.data.hold = 0;
-      } else {
-        m.timer -= dt;
-        if (m.timer <= 0) return 'fail';
-        const d = Math.hypot(G.player.x - LANDMARKS.hotel.x, G.player.y - LANDMARKS.hotel.y);
-        if (d < 110) return 'done';
-      }
-      return 'active';
-    },
-    objective(G) {
-      const m = G.mission;
-      if (m.phase === 0) return 'Pick up the package at Dock 9';
-      return `Deliver the package to The Palms Hotel — ${Math.max(0, Math.ceil(m.timer))}s left`;
-    },
-    target(G) {
-      return G.mission.phase === 0 ? { x: LANDMARKS.docks.x, y: LANDMARKS.docks.y } : { x: LANDMARKS.hotel.x, y: LANDMARKS.hotel.y };
-    },
-  },
-  {
-    id: 'heat-wave',
-    title: 'Heat Wave',
-    giver: 'Mara Solis',
-    brief: 'The alarm tripped and the whole city saw your face. Three stars, Dana. Lose them — break line of sight, stay out of view, and let the heat cool.',
-    reward: 800,
-    start(G) {
-      G.mission.phase = 0;
-      G.mission.timer = 180;
-      G.wanted.heat = 70;
-      G.wanted.hiddenTimer = 0;
-    },
-    update(G, dt) {
-      const m = G.mission;
-      m.timer -= dt;
-      if (G.wanted.stars === 0) return 'done';
-      if (m.timer <= 0) return 'fail';
-      return 'active';
-    },
-    objective(G) {
-      return `Lose the cops — stay unseen until the stars clear (${Math.max(0, Math.ceil(G.mission.timer))}s)`;
-    },
-    target() { return null; },
-  },
-  {
-    id: 'the-collection',
-    title: 'The Collection',
-    giver: 'Mara Solis',
-    brief: 'Three cash drops are stashed around Solmar — the beach, the docks and downtown. Collect all three. The Salt Kings want them too, so do not dawdle.',
-    reward: 1000,
-    start(G) {
-      G.mission.phase = 0;
-      G.mission.data.got = 0;
-      // A retry must not stack fresh drops on the ones left behind from the
-      // last attempt: clear the old cashbags before hiding three new ones.
-      G.pickups = G.pickups.filter((p) => p.kind !== 'cashbag');
-      for (const s of COLLECT_SPOTS) {
-        G.pickups.push({ kind: 'cashbag', x: s.x, y: s.y, taken: false, bob: 0 });
-      }
-    },
-    update(G) {
-      const got = G.pickups.filter((p) => p.kind === 'cashbag' && p.taken).length;
-      G.mission.data.got = got;
-      if (got >= 3) return 'done';
-      return 'active';
-    },
-    objective(G) {
-      const next = G.pickups.find((p) => p.kind === 'cashbag' && !p.taken);
-      const where = next ? ` — next drop: ${districtNameAt(next.x, next.y)}` : '';
-      return `Collect the cash drops — ${G.mission.data.got ?? 0} of 3 found${where}`;
-    },
-    target(G) {
-      const next = G.pickups.find((p) => p.kind === 'cashbag' && !p.taken);
-      return next ? { x: next.x, y: next.y } : null;
-    },
-  },
-  {
-    id: 'bayfront-sprint',
-    title: 'Bayfront Sprint',
-    giver: 'Mara Solis',
-    brief: 'An illegal sprint around the bayfront. Six checkpoints, two rivals, 150 seconds. Beat them all to the last gate and the pot is yours.',
-    reward: 1500,
-    start(G) {
-      G.mission.phase = 0;
-      G.mission.data.cp = 0;
-      G.mission.timer = 150;
-      G.mission.data.rivalCp = [0, 0];
-      // Two rival drivers in fast cars, waiting at the start line.
-      const spots = [{ x: 900, y: 520 }, { x: 900, y: 440 }];
-      G.rivals = spots.map((s, i) => spawnRival(G, s.x, s.y, i));
-    },
-    update(G, dt) {
-      const m = G.mission;
-      m.timer -= dt;
-      if (m.timer <= 0) return 'fail';
-      const cp = RACE_POINTS[m.data.cp];
-      if (cp && Math.hypot(G.player.x - cp.x, G.player.y - cp.y) < 90) {
-        m.data.cp++;
-        G.audio?.cash();
-        G.toast = { text: `Checkpoint ${m.data.cp} of ${RACE_POINTS.length}!`, t: 0, dur: 2 };
-        if (m.data.cp >= RACE_POINTS.length) return 'done';
-      }
-      // A rival who clears every gate first wins the pot instead.
-      for (let i = 0; i < G.rivals.length; i++) {
-        if (G.rivals[i].cp >= RACE_POINTS.length) return 'fail';
-      }
-      return 'active';
-    },
-    objective(G) {
-      const m = G.mission;
-      return `Race! Checkpoint ${Math.min(m.data.cp + 1, RACE_POINTS.length)} of ${RACE_POINTS.length} — ${Math.max(0, Math.ceil(m.timer))}s left`;
-    },
-    target(G) {
-      const cp = RACE_POINTS[G.mission.data.cp];
-      return cp ? { x: cp.x, y: cp.y } : null;
-    },
-  },
-  {
-    id: 'the-big-score',
-    title: 'The Big Score',
-    giver: 'Mara Solis',
-    brief: 'Solmar Bay Bank. Walk in, hold the floor for thirty seconds while the alarms scream, grab the cash and vanish. This is the one that clears your debt.',
-    reward: 5000,
-    start(G) { G.mission.phase = 0; G.mission.data.hold = 0; },
-    update(G, dt) {
-      const m = G.mission;
-      if (m.phase === 0) {
-        const d = Math.hypot(G.player.x - LANDMARKS.bank.x, G.player.y - LANDMARKS.bank.y);
-        if (d < 110) {
-          m.phase = 1;
-          m.data.hold = 0;
-          G.wanted.heat = 85;
-          G.wanted.hiddenTimer = 0;
-          G.toast = { text: 'ALARM! Hold the bank floor — 30 seconds!', t: 0, dur: 4 };
-        }
-      } else if (m.phase === 1) {
-        const d = Math.hypot(G.player.x - LANDMARKS.bank.x, G.player.y - LANDMARKS.bank.y);
-        if (d < 130) {
-          m.data.hold += dt;
-          if (m.data.hold >= 30) {
-            m.phase = 2;
-            G.toast = { text: 'Cash grabbed! Get to the safehouse!', t: 0, dur: 4 };
-          }
-        }
-      } else {
-        const d = Math.hypot(G.player.x - LANDMARKS.safehouse.x, G.player.y - LANDMARKS.safehouse.y);
-        if (d < 110) return 'done';
-      }
-      return 'active';
-    },
-    objective(G) {
-      const m = G.mission;
-      if (m.phase === 0) return 'Get inside Solmar Bay Bank';
-      if (m.phase === 1) return `Hold the bank floor — ${Math.max(0, Math.ceil(30 - m.data.hold))}s`;
-      return 'Escape to the safehouse with the cash';
-    },
-    target(G) {
-      const m = G.mission;
-      if (m.phase === 2) return { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y };
-      return { x: LANDMARKS.bank.x, y: LANDMARKS.bank.y };
-    },
-  },
-  {
-    id: 'last-delivery',
-    title: 'The Last Delivery',
-    giver: 'Mara Solis',
-    brief: 'The Courier Depot has a van loaded with three parcels for the far corners of Solmar — Marina Pier, the Neon Arcade and Old Town. Take the van, run all three drops in 180 seconds, then bring the van home to the safehouse. The van is slow, the city is wide, and the clock is the enemy.',
-    reward: 2500,
-    start(G) {
-      G.mission.phase = 0;
-      G.mission.data.drops = 0;
-      G.mission.data.hold = 0;
-      G.mission.timer = 180;
-      // The job's van waits at the depot; if the player already took it
-      // (or wrecked it) on a previous attempt, park a fresh one.
-      const depot = landmarkByKind('depot') ?? LANDMARKS.depot;
-      const near = G.cars.some((c) => !c.dead && c.typeKey === 'delivery' && Math.hypot(c.x - depot.x, c.y - depot.y) < 400);
-      if (!near) {
-        const van = {
-          x: depot.x, y: depot.y - 120, angle: Math.PI / 2, vx: 0, vy: 0, speed: 0, slip: 0,
-          type: { ...G.types.delivery }, typeKey: 'delivery',
-          color: '#f39c12', hp: G.types.delivery.hp, maxHp: G.types.delivery.hp,
-          ai: 'parked', driver: null, dead: false, dir: 0, target: null, brakeTimer: 0, shootCd: 0,
-        };
-        G.cars.push(van);
-      }
-    },
-    update(G, dt) {
-      const m = G.mission;
-      const van = G.player.inCar?.typeKey === 'delivery' ? G.player.inCar : null;
-      if (m.phase === 0) {
-        if (van) {
-          m.phase = 1;
-          G.toast = { text: 'Van secured. Three drops, 180 seconds — move!', t: 0, dur: 4 };
-        }
-        return 'active';
-      }
-      m.timer -= dt;
-      if (m.timer <= 0) return 'fail';
-      if (m.phase === 1) {
-        const drop = DELIVERY_DROPS[m.data.drops];
-        if (!drop) { m.phase = 2; return 'active'; }
-        if (!van) {
-          G.toast = { text: 'The parcels are in the van — get back in it!', t: 0, dur: 2 };
-          return 'active';
-        }
-        const d = Math.hypot(G.player.x - drop.x, G.player.y - drop.y);
-        if (d < 110) {
-          m.data.hold += dt;
-          if (m.data.hold > 1) {
-            m.data.hold = 0;
-            m.data.drops++;
-            G.player.cash += ECONOMY.PARCEL_BONUS;
-            G.stats.parcels++;
-            G.audio?.cash();
-            G.toast = { text: `Parcel ${m.data.drops} of ${DELIVERY_DROPS.length} delivered (+$${ECONOMY.PARCEL_BONUS})`, t: 0, dur: 3 };
-            if (m.data.drops >= DELIVERY_DROPS.length) m.phase = 2;
-          }
-        } else m.data.hold = 0;
-      } else {
-        const d = Math.hypot(G.player.x - LANDMARKS.safehouse.x, G.player.y - LANDMARKS.safehouse.y);
-        if (d < 110 && van) return 'done';
-      }
-      return 'active';
-    },
-    objective(G) {
-      const m = G.mission;
-      if (m.phase === 0) return 'Take the courier van at the Solmar Courier Depot';
-      if (m.phase === 1) {
-        const drop = DELIVERY_DROPS[m.data.drops];
-        return `Deliver parcel ${m.data.drops + 1} of ${DELIVERY_DROPS.length} to ${drop.name} — ${Math.max(0, Math.ceil(m.timer))}s left`;
-      }
-      return `All parcels delivered — bring the van home to the safehouse (${Math.max(0, Math.ceil(m.timer))}s)`;
-    },
-    target(G) {
-      const m = G.mission;
-      if (m.phase === 0) {
-        const depot = landmarkByKind('depot') ?? LANDMARKS.depot;
-        return { x: depot.x, y: depot.y };
-      }
-      if (m.phase === 1) {
-        const drop = DELIVERY_DROPS[m.data.drops];
-        return drop ? { x: drop.x, y: drop.y } : { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y };
-      }
-      return { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y };
-    },
-  },
+  { id: 0, title: 'First Drop', kind: 'deliver', brief: 'Mara needs a parcel at the pier. Take it there — no questions, no stops.', reward: 300, time: 150, unlock: 'Taxi fares open' },
+  { id: 1, title: 'Hot Wheels', kind: 'race', brief: 'A Kings runner stole Mara\u2019s car. Chase the checkpoints and bring it back — fast.', reward: 450, time: 180, unlock: 'Sports car spawns in Downtown' },
+  { id: 2, title: 'Corner Mart', kind: 'robbery', brief: 'The till at Corner Mart — North is fat tonight. Grab the cash and lose the heat.', reward: 700, time: 240, unlock: 'Pistol discount at Ironworks' },
+  { id: 3, title: 'The Escort', kind: 'escort', brief: 'Mara\u2019s driver is spooked. Ride with him to the diner and keep the Kings off his tail.', reward: 600, time: 240, unlock: 'Body armor at Ironworks' },
+  { id: 4, title: 'Heat Wave', kind: 'escape', brief: 'The cops made you at the market. Lose a three-star wanted level and meet Mara at her office.', reward: 800, time: 300, unlock: 'Spray shop wipes CCTV evidence' },
+  { id: 5, title: 'Kings Turf', kind: 'fight', brief: 'The Salt Kings are collecting on the east side. Clear two waves on their turf and send a message.', reward: 1000, time: 300, unlock: 'Shotgun at Ironworks' },
+  { id: 6, title: 'The Last Delivery', kind: 'delivery', brief: 'Three parcels, one courier van, 180 seconds. The depot van is waiting — make every drop.', reward: 2500, time: 180, unlock: 'Courier van is yours to keep' },
+  { id: 7, title: 'Paying the Debt', kind: 'finale', brief: 'One last run: take the payoff to the pier at dawn and end this. The Kings will try to stop you.', reward: 4000, time: 360, unlock: 'Story complete — free roam, legend of Solmar' },
 ];
 
-function spawnRival(G, x, y, index) {
-  const colors = ['#ff2e88', '#7cff4d'];
-  const car = {
-    x, y, angle: 0, vx: 0, vy: 0, speed: 0, slip: 0,
-    type: { ...G.types.rival },
-    color: colors[index % colors.length],
-    hp: 120, maxHp: 120, ai: 'rival', cp: 0, driver: 'rival', dead: false,
-    brakeTimer: 0,
-  };
-  G.cars.push(car);
-  return car;
+export function missionObjective(G) {
+  const m = G.mission;
+  if (!m.active) return G.campaign.missionsDone.length >= 8 ? 'Story complete — Solmar is yours' : 'Visit Mara\u2019s Office (M) to start the next job';
+  const def = MISSIONS[m.index];
+  switch (m.stage) {
+    case 'go': return `${def.title}: reach ${m.targetName}`;
+    case 'pickup': return `${def.title}: pick up the package`;
+    case 'deliver': return `${def.title}: deliver to ${m.targetName}`;
+    case 'checkpoint': return `${def.title}: checkpoint ${m.checkpoint + 1}/${m.checkpoints.length}`;
+    case 'rob': return `${def.title}: grab the cash (hold F)`;
+    case 'escape': return `${def.title}: lose the heat, then reach ${m.targetName}`;
+    case 'fight': return `${def.title}: clear the Kings — ${m.killsNeeded - m.kills} left`;
+    case 'finale': return `${def.title}: reach the pier with the payoff`;
+    default: return def.title;
+  }
 }
 
-export function raceCheckpoint(G, index) {
-  return RACE_POINTS[clamp(index, 0, RACE_POINTS.length - 1)];
+export function missionTarget(G) {
+  const m = G.mission;
+  if (!m.active) return null;
+  if (m.stage === 'checkpoint') return m.checkpoints[m.checkpoint];
+  if (m.target) return { x: m.target.x, y: m.target.y };
+  return null;
+}
+
+function raceCheckpoints(G) {
+  const p = G.player;
+  return [
+    { x: 1440, y: 960 }, { x: 2400, y: 1440 }, { x: 2880, y: 2400 },
+    { x: 1920, y: 2880 }, { x: 960, y: 1920 }, { x: LANDMARKS.maraOffice.x, y: LANDMARKS.maraOffice.y },
+  ].map((c) => ({ ...c, reached: false }));
 }
 
 export function startMission(G, index) {
   const def = MISSIONS[index];
   if (!def) return false;
-  G.mission = { index, active: true, phase: 0, data: {}, timer: 0, def };
-  def.start(G);
-  G.banner = { title: def.title.toUpperCase(), sub: def.brief, t: 0, dur: 5 };
-  G.audio?.missionStart();
+  const m = {
+    active: true, index, stage: 'go', timer: def.time, target: null,
+    targetName: '', checkpoint: 0, checkpoints: [], kills: 0, killsNeeded: 0,
+    parcels: 0, parcelsDone: 0, robProgress: 0, startedAt: G.time,
+  };
+  G.mission = m;
+  const p = G.player;
+  switch (def.kind) {
+    case 'deliver':
+      m.target = LANDMARKS.pier; m.targetName = 'Marina Pier'; m.stage = 'deliver';
+      break;
+    case 'race':
+      m.checkpoints = raceCheckpoints(G); m.stage = 'checkpoint';
+      break;
+    case 'robbery':
+      m.target = LANDMARKS.shopA; m.targetName = 'Corner Mart — North'; m.stage = 'go';
+      break;
+    case 'escort':
+      m.target = LANDMARKS.diner; m.targetName = 'Sunset Diner'; m.stage = 'go';
+      m.escort = { x: p.x + 60, y: p.y, hp: 100 };
+      break;
+    case 'escape':
+      m.target = LANDMARKS.maraOffice; m.targetName = "Mara's Office"; m.stage = 'escape';
+      // The cops are already on you.
+      G.wanted.heat = 55; G.wanted.stars = 3; G.wanted.state = 'solid';
+      G.wanted.lastSeenX = p.x; G.wanted.lastSeenY = p.y;
+      break;
+    case 'fight':
+      m.killsNeeded = 6; m.stage = 'fight';
+      G.gangs.active = true; G.gangs.timer = 2;
+      break;
+    case 'delivery':
+      m.parcels = 3; m.parcelsDone = 0; m.stage = 'deliver';
+      m.target = LANDMARKS.market; m.targetName = 'Mercado Central';
+      G.hudMessage = 'Courier van parked at the depot — grab it!';
+      G.hudTimer = 5;
+      break;
+    case 'finale':
+      m.target = LANDMARKS.pier; m.targetName = 'Marina Pier'; m.stage = 'finale';
+      G.gangs.active = true; G.gangs.timer = 3;
+      break;
+    default:
+      m.target = LANDMARKS.pier; m.targetName = 'Marina Pier';
+  }
+  G.hudMessage = `${def.title} — ${def.brief}`;
+  G.hudTimer = 6;
   return true;
 }
 
-export function missionObjective(G) {
-  if (!G.mission.active) return null;
-  return G.mission.def.objective(G);
+function finishMission(G, success) {
+  const m = G.mission;
+  const def = MISSIONS[m.index];
+  if (success) {
+    let pay = def.reward;
+    if (def.kind === 'delivery') pay += m.parcelsDone * 150;
+    G.player.cash += pay;
+    G.campaign.missionsDone.push(m.index);
+    G.campaign.reputation += 10;
+    G.floaters.push({ x: G.player.x, y: G.player.y - 30, text: `+$${pay} — ${def.title} complete!`, color: '#ffd23e', t: 0, life: 2.5 });
+    G.hudMessage = `${def.title} complete! +$${pay} — ${def.unlock}`;
+    G.hudTimer = 6;
+    if (m.index === 0) G.gangs.active = true; // the Kings notice you now
+    if (m.index === 7) G.ending = true;
+  } else {
+    G.hudMessage = `${def.title} failed — talk to Mara to retry`;
+    G.hudTimer = 5;
+  }
+  G.mission = { active: false, index: -1, stage: '', timer: 0, target: null, targetName: '', checkpoint: 0, checkpoints: [], kills: 0, killsNeeded: 0, parcels: 0, parcelsDone: 0, robProgress: 0, startedAt: 0 };
 }
 
-export function missionTarget(G) {
-  if (!G.mission.active) return null;
-  return G.mission.def.target(G);
-}
-
-/** Runs the active mission; returns 'active', 'done' or 'fail'. */
 export function updateMission(G, dt) {
-  if (!G.mission.active) return 'active';
-  return G.mission.def.update(G, dt);
+  const m = G.mission;
+  if (!m.active) return;
+  const def = MISSIONS[m.index];
+  m.timer -= dt;
+  if (m.timer <= 0) { finishMission(G, false); return; }
+  const p = G.player;
+  const near = (t, r = 70) => t && dist(p.x, p.y, t.x, t.y) < r;
+
+  switch (def.kind) {
+    case 'deliver':
+      if (near(m.target, 80)) finishMission(G, true);
+      break;
+    case 'race': {
+      const cp = m.checkpoints[m.checkpoint];
+      if (cp && near(cp, 90)) {
+        m.checkpoint++;
+        G.player.cash += 50;
+        if (m.checkpoint >= m.checkpoints.length) finishMission(G, true);
+      }
+      break;
+    }
+    case 'robbery':
+      if (m.stage === 'go' && near(m.target, 80)) { m.stage = 'rob'; G.hudMessage = 'Hold F to empty the till!'; G.hudTimer = 3; }
+      else if (m.stage === 'rob') {
+        if (near(m.target, 110) && G.robHeld) {
+          m.robProgress += dt;
+          if (m.robProgress >= 4) {
+            m.stage = 'escape';
+            m.target = LANDMARKS.maraOffice; m.targetName = "Mara's Office";
+            G.wanted.heat = Math.max(G.wanted.heat, 45); G.wanted.stars = Math.max(G.wanted.stars, 2);
+            G.wanted.state = 'hollow'; G.wanted.reportTimer = 2;
+            G.hudMessage = 'Got the cash! Lose the heat and reach Mara.';
+            G.hudTimer = 4;
+          }
+        } else if (!near(m.target, 110)) { m.robProgress = Math.max(0, m.robProgress - dt); }
+      } else if (m.stage === 'escape' && near(m.target, 80) && G.wanted.stars <= 1) finishMission(G, true);
+      break;
+    case 'escort': {
+      if (m.escort) {
+        // The driver follows you; if he falls too far behind he catches up.
+        const d = dist(m.escort.x, m.escort.y, p.x, p.y);
+        if (d > 260) { m.escort.x = p.x - 40; m.escort.y = p.y + 40; }
+        else if (d > 90) {
+          const a = Math.atan2(p.y - m.escort.y, p.x - m.escort.x);
+          m.escort.x += Math.cos(a) * 130 * dt;
+          m.escort.y += Math.sin(a) * 130 * dt;
+        }
+        if (m.escort.hp <= 0) { finishMission(G, false); return; }
+      }
+      if (near(m.target, 80)) finishMission(G, true);
+      break;
+    }
+    case 'escape':
+      if (G.wanted.stars === 0 && near(m.target, 80)) finishMission(G, true);
+      break;
+    case 'fight':
+      if (m.kills >= m.killsNeeded) finishMission(G, true);
+      break;
+    case 'delivery': {
+      const drops = [LANDMARKS.market, LANDMARKS.diner, LANDMARKS.pier];
+      const cur = drops[Math.min(m.parcelsDone, 2)];
+      m.target = cur;
+      m.targetName = cur.name;
+      const inVan = p.inCar && p.inCar.typeKey === 'delivery';
+      if (near(cur, 80) && inVan) {
+        m.parcelsDone++;
+        G.player.cash += 150;
+        G.floaters.push({ x: p.x, y: p.y - 30, text: `Parcel ${m.parcelsDone}/3 delivered +$150`, color: '#ffd23e', t: 0, life: 1.6 });
+        if (m.parcelsDone >= 3) finishMission(G, true);
+      }
+      break;
+    }
+    case 'finale':
+      if (near(m.target, 80)) finishMission(G, true);
+      break;
+    default:
+      if (near(m.target, 80)) finishMission(G, true);
+  }
+}
+
+export function nextMissionIndex(G) {
+  for (let i = 0; i < MISSIONS.length; i++) {
+    if (!G.campaign.missionsDone.includes(i)) return i;
+  }
+  return -1;
 }

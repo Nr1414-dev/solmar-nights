@@ -1,91 +1,76 @@
-// SOLMAR NIGHTS — save.js
-// Save and continue, through localStorage. The save holds the campaign
-// state — cash, ammo, the next job, the hidden packages found — and nothing
-// else. A private window simply keeps the run for the visit.
+// SOLMAR NIGHTS v2.3 — save.js
+// Save / continue / settings through localStorage. The save holds the
+// campaign (cash, missions done, weapons, reputation, position) — never
+// the live world, which is always rebuilt from the seed. Everything is
+// wrapped in try/catch: a browser that blocks storage still plays.
 
-import { BEST_KEY, DEFAULT_SETTINGS, MINIMAP_ORDER, SAVE_KEY, SETTINGS_KEY } from './config.js';
+import { BEST_KEY, SAVE_KEY, SETTINGS_KEY } from './config.js';
 
-/** The player's settings, merged over the defaults and clamped: a stored
- *  value from an older build (or a hand-edited one) can never break the
- *  game — an unknown minimap size falls back to medium, a wild volume to
- *  its nearest edge. */
+export const DEFAULT_SETTINGS = {
+  music: 0.55,
+  sfx: 0.8,
+  minimap: 1, // 0 small, 1 medium, 2 large
+  shake: true,
+  hints: true,
+};
+
 export function readSettings() {
-  const out = { ...DEFAULT_SETTINGS };
   try {
-    const raw = window.localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return out;
-    const data = JSON.parse(raw);
-    if (!data || typeof data !== 'object') return out;
-    if (typeof data.music === 'number') out.music = Math.max(0, Math.min(1, data.music));
-    if (typeof data.sfx === 'number') out.sfx = Math.max(0, Math.min(1, data.sfx));
-    if (MINIMAP_ORDER.includes(data.minimap)) out.minimap = data.minimap;
-    if (typeof data.shake === 'boolean') out.shake = data.shake;
-    if (typeof data.hints === 'boolean') out.hints = data.hints;
-  } catch {
-    // Corrupt settings are forgotten, not fatal.
-  }
-  return out;
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return { ...DEFAULT_SETTINGS };
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+  } catch { return { ...DEFAULT_SETTINGS }; }
 }
 
 export function writeSettings(settings) {
-  try {
-    window.localStorage.setItem(SETTINGS_KEY, JSON.stringify({
-      music: settings.music,
-      sfx: settings.sfx,
-      minimap: settings.minimap,
-      shake: settings.shake,
-      hints: settings.hints,
-    }));
-    return true;
-  } catch {
-    return false;
-  }
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* storage blocked */ }
 }
 
 export function readSave() {
   try {
-    const raw = window.localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const data = JSON.parse(raw);
-    if (!data || typeof data !== 'object') return null;
+    if (!data || typeof data.cash !== 'number') return null;
     return data;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export function writeSave(G) {
   try {
-    const taken = G.pickups.filter((p) => p.kind === 'package' && p.taken).map((p) => p.id);
+    const p = G.player;
     const data = {
-      cash: G.player.cash,
-      ammo: G.player.ammo,
-      armor: G.player.armor,
-      missionIndex: G.missionIndex,
-      packages: G.stats.packages,
-      takenPackages: taken,
-      stats: G.stats,
-      savedAt: Date.now(),
+      version: 3,
+      cash: p.cash,
+      missionsDone: [...G.campaign.missionsDone],
+      reputation: G.campaign.reputation,
+      kills: G.campaign.kills,
+      carsStolen: G.campaign.carsStolen,
+      weapon: p.weapon,
+      ammo: p.ammo,
+      armor: p.armor,
+      outfit: p.outfit,
+      x: p.x, y: p.y,
+      playSeconds: Math.round(G.time),
+      bestStars: G.campaign.bestStars,
+      packages: [...G.campaign.packages],
+      savedAt: new Date().toISOString(),
     };
-    window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
     return true;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
+}
+
+export function clearSave() {
+  try { localStorage.removeItem(SAVE_KEY); } catch { /* ignore */ }
 }
 
 export function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
-  }
+  try { return Number(localStorage.getItem(BEST_KEY) ?? 0) || 0; } catch { return 0; }
 }
 
 export function saveBest(value) {
   try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off: the best then lasts this visit only.
-  }
+    if (value > readBest()) localStorage.setItem(BEST_KEY, String(value));
+  } catch { /* ignore */ }
 }

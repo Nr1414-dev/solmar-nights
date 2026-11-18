@@ -1,175 +1,216 @@
-// SOLMAR NIGHTS — wanted.js
-// The wanted system: a small visible signal (the stars) over a simple rule —
-// a crime only counts when someone sees it. Witnesses are pedestrians and
-// police near the crime; a cop who sees the player keeps the chase hot.
-// Break line of sight and stay hidden, and the heat cools one star at a
-// time; the hotter you are, the longer each star takes to cool.
+// SOLMAR NIGHTS v2.3 — wanted.js
+// The wanted system, modelled on the modern crime-game rules the research
+// describes: a crime only counts when somebody sees it. Each star has a
+// state — hollow (reported, police heading to the scene without a
+// description), solid white (a cop sees you right now, active chase),
+// flashing white (line of sight broken, police searching your last known
+// position), red (you escaped, but the area stays hot and the police
+// remember your description; walk back in looking the same and the chase
+// restarts). Under the stars sit evidence icons — CCTV, outfit, face,
+// vehicle, weapon — each cleared its own way.
 
 import { WANTED } from './config.js';
-import { circleBlocked, isOnRoad, isSaltKingsTurf } from './city.js';
-
-/** Line of sight between two points: true when no building stands between. */
-export function hasLineOfSight(G, x1, y1, x2, y2) {
-  const d = Math.hypot(x2 - x1, y2 - y1);
-  const steps = Math.max(1, Math.ceil(d / 16));
-  for (let i = 1; i < steps; i++) {
-    const t = i / steps;
-    if (circleBlocked(G.city, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, 4)) return false;
-  }
-  return true;
-}
+import { circleBlocked } from './city.js';
+import { clamp, dist } from './random.js';
 
 export function createWanted() {
   return {
     heat: 0,
     stars: 0,
-    hiddenTimer: 0,
-    seen: false,
-    flash: 0,
-    // Where the police last saw the player: when they lose sight they
-    // search this spot instead of homing in on the player perfectly.
-    lastKnown: null,
-    // How long the player has stayed under cover (off the road) while the
-    // helicopter is up: six seconds of cover shakes the heli off.
-    heliHidden: 0,
+    state: 'none', // none | hollow | solid | flashing | red
+    lastSeenX: 0, lastSeenY: 0,
+    seenTimer: 0,
+    hideTimer: 0,
+    hotX: 0, hotY: 0, hotRadius: 0, hotTimer: 0,
+    evidence: { cctv: false, outfit: false, face: false, car: false, weapon: false },
+    evidenceTimer: { cctv: 0 },
+    reportTimer: 0, // a witness is on the phone; police arrive when it ends
+    reported: false,
   };
 }
 
-/** A one-word read on the heat, for the HUD under the stars. */
+export function wantedStars(w) { return w.stars; }
+
 export function wantedLabel(stars) {
-  return ['CLEAN', 'SUSPECT', 'WANTED', 'DANGEROUS', 'MOST WANTED', 'CITYWIDE MANHUNT'][stars] ?? 'CLEAN';
+  return ['Clean', 'One Star', 'Two Stars', 'Three Stars', 'Four Stars', 'Five Stars', 'Six Stars'][stars] ?? 'Clean';
 }
 
-/** The helicopter's spotlight: it only holds the player while the player
- *  is out in the open — on a road, in the spotlight's circle. Duck off the
- *  road between the buildings and the heli is blind. */
-export function heliSeesPlayer(G) {
-  const heli = G.heli;
-  if (!heli?.active) return false;
-  const p = G.player;
-  if (Math.hypot(heli.x - p.x, heli.y - p.y) > WANTED.HELI_SPOT_RADIUS) return false;
-  return isOnRoad(p.x, p.y);
-}
-
-/** A pedestrian close enough to see the crime. */
-function pedWitnessNear(G, x, y, radius) {
-  for (const p of G.peds) {
-    if (!p.dead && Math.hypot(p.x - x, p.y - y) < radius) return true;
+// Line of sight: sample the segment; a building in the way blocks it.
+export function hasLineOfSight(G, x1, y1, x2, y2) {
+  const d = dist(x1, y1, x2, y2);
+  const steps = Math.ceil(d / 24);
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    if (circleBlocked(G.city, x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, 6)) return false;
   }
-  return false;
-}
-
-/** A cop on foot or in a car close enough to see the crime. */
-function copWitnessNear(G, x, y, radius) {
-  for (const c of G.police) {
-    if (!c.dead && Math.hypot(c.x - x, c.y - y) < radius) return true;
-  }
-  for (const car of G.cars) {
-    if (car.ai === 'police' && Math.hypot(car.x - x, car.y - y) < radius) return true;
-  }
-  return false;
-}
-
-export function addCrime(G, kind, x, y) {
-  const w = G.wanted;
-  const amount = WANTED.CRIME[kind] ?? 10;
-  const px = x ?? G.player.x;
-  const py = y ?? G.player.y;
-  // A cop always counts as a witness; a pedestrian only if close enough.
-  // Killing a cop is reported by the radio no matter what. On Salt Kings
-  // turf, bystanders look the other way: a pedestrian only counts at half
-  // the usual distance, while a cop still counts at full range.
-  const onTurf = isSaltKingsTurf(px, py);
-  const witnessed = kind === 'killCop'
-    || copWitnessNear(G, px, py, WANTED.CRIME_RADIUS)
-    || pedWitnessNear(G, px, py, onTurf ? WANTED.CRIME_RADIUS / 2 : WANTED.CRIME_RADIUS);
-  if (!witnessed) return false;
-  w.heat = Math.min(100, w.heat + amount);
-  w.hiddenTimer = 0;
   return true;
 }
 
-export function wantedStars(w) {
-  let stars = 0;
-  for (let i = 1; i <= 5; i++) {
-    if (w.heat >= WANTED.HEAT_PER_STAR[i]) stars = i;
+function starsForHeat(heat) {
+  let s = 0;
+  for (let i = 1; i < WANTED.HEAT_PER_STAR.length; i++) {
+    if (heat >= WANTED.HEAT_PER_STAR[i]) s = i;
   }
-  return stars;
+  return Math.min(s, 6);
+}
+
+// A crime happened at (x,y). It only becomes heat if a witness can see
+// it — a pedestrian or a cop within range with line of sight, or a CCTV
+// camera. Unseen crimes still add a little heat if the victim screams:
+// the `witnessed` flag is computed by the caller.
+export function addCrime(G, kind, x, y, witnessed) {
+  const w = G.wanted;
+  const base = WANTED.CRIME[kind] ?? 15;
+  const p = G.player;
+  if (!witnessed) {
+    // Nobody saw it: a whisper of heat, and only if it was loud.
+    if (kind === 'shoot' || kind === 'explosion') w.heat = Math.min(115, w.heat + base * 0.15);
+    return;
+  }
+  w.heat = Math.min(115, w.heat + base);
+  w.stars = starsForHeat(w.heat);
+  // The witness starts a report: police head to the scene (hollow star)
+  // unless a cop already sees you (solid star).
+  if (w.state === 'none' || w.state === 'red') {
+    w.state = 'hollow';
+    w.reportTimer = 3;
+    w.hotX = x; w.hotY = y; w.hotRadius = 420; w.hotTimer = 90;
+  }
+  // Evidence accumulates with the crime.
+  if (kind === 'shoot' || kind === 'killPed' || kind === 'killCop') {
+    w.evidence.weapon = p.weapon !== 'fists';
+    w.evidence.face = true;
+    w.evidence.outfit = true;
+  }
+  if (kind === 'stealCar' || kind === 'runOver') w.evidence.car = true;
+  // CCTV: if a camera covers the spot, the tape exists.
+  for (const cam of G.city.cameras) {
+    if (dist(x, y, cam.x, cam.y) < cam.r) {
+      w.evidence.cctv = true;
+      w.evidenceTimer.cctv = 120;
+      break;
+    }
+  }
+  if (w.stars > G.campaign.bestStars) G.campaign.bestStars = w.stars;
+}
+
+export function clearWanted(G) {
+  const w = G.wanted;
+  w.heat = 0; w.stars = 0; w.state = 'none';
+  w.hideTimer = 0; w.hotTimer = 0; w.reportTimer = 0; w.reported = false;
+  w.evidence = { cctv: false, outfit: false, face: false, car: false, weapon: false };
+}
+
+// Evidence clears, each its own way:
+//  cctv — the tape ages out after 120s, or a spray-shop visit wipes it;
+//  outfit — change clothes at Marina Threads;
+//  face — a spray-shop respray + time, or a full escape to red then leaving;
+//  car — ditch the car (get out and walk away) or respray it;
+//  weapon — holster / ditch the weapon (switch to fists).
+export function clearEvidence(G, kind) {
+  const w = G.wanted;
+  if (kind === 'outfit') { w.evidence.outfit = false; G.player.outfit = (G.player.outfit + 1) % 4; }
+  if (kind === 'car') w.evidence.car = false;
+  if (kind === 'cctv') { w.evidence.cctv = false; w.evidenceTimer.cctv = 0; }
+  if (kind === 'weapon') { w.evidence.weapon = false; G.player.weapon = 'fists'; }
+  if (kind === 'face') w.evidence.face = false;
+}
+
+export function heliSeesPlayer(G) {
+  const h = G.heli;
+  if (!h || !h.active) return false;
+  const p = G.player;
+  if (dist(h.x, h.y, p.x, p.y) > WANTED.HELI_SPOT_RADIUS + 120) return false;
+  return hasLineOfSight(G, h.x, h.y, p.x, p.y);
 }
 
 export function updateWanted(G, dt) {
   const w = G.wanted;
-  w.stars = wantedStars(w);
-  if (w.stars === 0) {
-    w.seen = false;
-    w.hiddenTimer = 0;
-    return;
-  }
-  // Does any police unit have eyes on the player right now? Distance alone
-  // is not enough: a building between the cop and the player breaks sight,
-  // so ducking behind a block is a real way to cool the heat.
-  let seen = false;
   const p = G.player;
+  // CCTV tape ages out on its own.
+  if (w.evidence.cctv) {
+    w.evidenceTimer.cctv -= dt;
+    if (w.evidenceTimer.cctv <= 0) w.evidence.cctv = false;
+  }
+  // A witness report finishes: hollow -> solid if a cop is near, else
+  // the police still come to look (hollow stays, they search the scene).
+  if (w.reportTimer > 0) {
+    w.reportTimer -= dt;
+    if (w.reportTimer <= 0) w.reported = true;
+  }
+  // Does any cop see the player right now?
+  let copSees = false;
+  for (const cop of G.cops) {
+    if (cop.dead) continue;
+    if (dist(cop.x, cop.y, p.x, p.y) < WANTED.SIGHT_RANGE && hasLineOfSight(G, cop.x, cop.y, p.x, p.y)) { copSees = true; break; }
+  }
   for (const car of G.cars) {
-    if (car.ai === 'police' && Math.hypot(car.x - p.x, car.y - p.y) < WANTED.SIGHT_RANGE && hasLineOfSight(G, car.x, car.y, p.x, p.y)) { seen = true; break; }
+    if (car.ai !== 'police' || car.dead) continue;
+    if (dist(car.x, car.y, p.x, p.y) < WANTED.SIGHT_RANGE && hasLineOfSight(G, car.x, car.y, p.x, p.y)) { copSees = true; break; }
   }
-  if (!seen) {
-    for (const c of G.police) {
-      if (!c.dead && Math.hypot(c.x - p.x, c.y - p.y) < WANTED.SIGHT_RANGE && hasLineOfSight(G, c.x, c.y, p.x, p.y)) { seen = true; break; }
-    }
-  }
-  // The helicopter's spotlight is its own pair of eyes: it pins the player
-  // while they are out in the open, and it alone can hold the chase hot
-  // when every patrol has lost sight.
-  if (!seen && heliSeesPlayer(G)) seen = true;
-  // Under cover while the heli is up, the clock runs the other way: six
-  // seconds off the road and the heli gives up the search, taking a star
-  // of heat with it.
-  if (G.heli?.active) {
-    if (!isOnRoad(p.x, p.y)) {
-      w.heliHidden += dt;
-      if (w.heliHidden >= WANTED.HELI_COVER_SECONDS) {
-        w.heliHidden = 0;
-        G.heli.active = false;
-        G.stats.heliEscapes++;
-        w.heat = Math.max(0, w.heat - 25);
-        w.stars = wantedStars(w);
-        G.banner = { title: 'HELI LOST YOU', sub: 'Under cover, out of the spotlight — the helicopter broke off.', t: 0, dur: 3 };
-        G.saveNeeded = true;
-      }
-    } else w.heliHidden = 0;
-  }
-  w.seen = seen;
-  if (seen) {
-    w.hiddenTimer = 0;
-    w.flash = 0;
-    w.lastKnown = { x: p.x, y: p.y };
-  } else {
-    w.hiddenTimer += dt;
-    w.flash += dt;
-    // Laying low off the streets cools the heat faster: ducking into a
-    // block, an alley or a park beats sitting in traffic where patrols
-    // cruise past.
-    const layLow = !isOnRoad(p.x, p.y);
-    const coolAfter = WANTED.HIDE_TIME[w.stars] * (layLow ? 0.7 : 1);
-    if (w.hiddenTimer >= coolAfter) {
-      w.heat = Math.max(0, w.heat - 25);
-      w.hiddenTimer = 0;
-      w.stars = wantedStars(w);
-      // A cooled star means the chase gives up: the patrols leave.
-      G.cars = G.cars.filter((c) => c.ai !== 'police');
-      for (const c of G.police) c.dead = true;
-      if (w.stars === 0) G.banner = { title: 'HEAT OFF', sub: 'The cops lost you.', t: 0, dur: 2.5 };
-    }
-  }
-}
+  if (G.heli.active && heliSeesPlayer(G)) copSees = true;
 
-export function clearWanted(G) {
-  G.wanted.heat = 0;
-  G.wanted.stars = 0;
-  G.wanted.hiddenTimer = 0;
-  G.wanted.seen = false;
-  G.wanted.lastKnown = null;
-  G.wanted.heliHidden = 0;
-  if (G.heli) G.heli.active = false;
+  if (w.stars > 0) {
+    if (copSees) {
+      w.state = 'solid';
+      w.lastSeenX = p.x; w.lastSeenY = p.y;
+      w.seenTimer = 0;
+      w.hideTimer = 0;
+    } else if (w.state === 'solid') {
+      w.state = 'flashing';
+      w.seenTimer = 0;
+    } else if (w.state === 'flashing') {
+      w.seenTimer += dt;
+      // Hidden long enough: drop one star.
+      if (w.seenTimer > WANTED.HIDE_TIME[w.stars]) {
+        w.heat = Math.max(0, w.heat - 26);
+        const ns = starsForHeat(w.heat);
+        if (ns < w.stars) {
+          w.stars = ns;
+          w.seenTimer = 0;
+          if (ns === 0) {
+            // Escaped — but the area stays hot and they remember you.
+            w.state = 'red';
+            w.hotX = w.lastSeenX; w.hotY = w.lastSeenY;
+            w.hotRadius = 520; w.hotTimer = 75;
+            w.hideTimer = 0;
+          } else {
+            w.state = 'flashing';
+          }
+        }
+      }
+    } else if (w.state === 'hollow') {
+      // Police arrive at the scene; if they find you there, it goes solid.
+      w.seenTimer += dt;
+      if (w.seenTimer > 25) {
+        w.heat = Math.max(0, w.heat - 20);
+        w.stars = starsForHeat(w.heat);
+        w.seenTimer = 0;
+        if (w.stars === 0) { w.state = 'none'; }
+      }
+    }
+  }
+  if (w.state === 'red') {
+    w.hotTimer -= dt;
+    // Walking back into the hot area looking the same restarts the chase.
+    const inHot = dist(p.x, p.y, w.hotX, w.hotY) < w.hotRadius;
+    const recognisable = w.evidence.outfit || w.evidence.face || w.evidence.car;
+    if (inHot && recognisable) {
+      w.heat = Math.max(w.heat, 30);
+      w.stars = starsForHeat(w.heat);
+      w.state = 'hollow';
+      w.reportTimer = 2;
+    }
+    if (w.hotTimer <= 0) {
+      w.state = 'none';
+      w.evidence.outfit = false;
+      w.evidence.face = false;
+      w.evidence.car = false;
+    }
+  }
+  // Standing in the crime area makes you easy to find: hide timer stalls.
+  if (w.state === 'flashing' && dist(p.x, p.y, w.hotX, w.hotY) < w.hotRadius * 0.6) {
+    w.seenTimer = Math.max(0, w.seenTimer - dt * 0.8);
+  }
+  w.heat = clamp(w.heat, 0, 115);
 }

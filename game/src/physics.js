@@ -1,171 +1,111 @@
-// SOLMAR NIGHTS — physics.js
-// Car physics and collision. A car keeps a world velocity vector; each step
-// splits it into forward and lateral parts, the lateral part decaying by the
-// grip model, so a handbrake turn really slides. Collisions are circles
-// (two per car, nose and tail) against the city's rectangles, and circles
-// against each other for car-to-car bumps.
+// SOLMAR NIGHTS v2.3 — physics.js
+// Car physics and collision. A car keeps a world velocity vector; each
+// step splits it into forward and lateral parts, decays the lateral part
+// by grip (that is the whole drift model), and adds engine/brake force
+// along the heading. Collisions are circle-vs-building and circle-vs-car
+// so nothing ever needs a physics library.
 
-import { circleBlocked, resolveCircle } from './city.js';
-import { clamp } from './random.js';
+import { FIRST_ROAD, LAST_ROAD, ROAD_W, WORLD } from './config.js';
+import { circleBlocked } from './city.js';
+import { angleDiff, clamp } from './random.js';
 
 export function carRadius(car) {
-  return Math.max(car.type.w, car.type.h) * 0.42;
+  return Math.max(car.type.w, car.type.h) * 0.62;
 }
 
-/**
- * One physics step for a car. `drive` is { throttle: -1..1, steer: -1..1,
- * handbrake: bool }. Returns the impact speed when the car hit something
- * hard this step (0 otherwise), so the caller can spark, shake and charge
- * damage for it.
- */
+// Drive one car one step. `drive` is {throttle -1..1, steer -1..1,
+// handbrake, gripScale}. Returns nothing; mutates the car.
 export function carStep(car, drive, dt, city) {
   const t = car.type;
+  const grip = (drive.handbrake ? t.gripHand : t.grip) * (drive.gripScale ?? 1);
   const fx = Math.cos(car.angle);
   const fy = Math.sin(car.angle);
-  let fSpeed = car.vx * fx + car.vy * fy;
-  let latX = car.vx - fSpeed * fx;
-  let latY = car.vy - fSpeed * fy;
-
-  // Steering authority grows with speed, then saturates; reversing flips it.
-  const steerAuthority = clamp(Math.abs(fSpeed) / 70, 0, 1);
-  car.angle += drive.steer * t.steer * steerAuthority * dt * (fSpeed < -1 ? -1 : 1);
-  const nfx = Math.cos(car.angle);
-  const nfy = Math.sin(car.angle);
-  fSpeed = car.vx * nfx + car.vy * nfy;
-  latX = car.vx - fSpeed * nfx;
-  latY = car.vy - fSpeed * nfy;
-
-  if (drive.throttle > 0) {
-    fSpeed = Math.min(fSpeed + t.accel * dt, t.vMax);
-  } else if (drive.throttle < 0) {
-    if (fSpeed > 8) fSpeed = Math.max(fSpeed - t.brake * dt, 0);
-    else fSpeed = Math.max(fSpeed - t.accel * 0.55 * dt, -t.revMax);
+  // Split velocity into forward / lateral.
+  let fwd = car.vx * fx + car.vy * fy;
+  let lat = -car.vx * fy + car.vy * fx;
+  const latDecay = Math.exp(-grip * dt);
+  lat *= latDecay;
+  car.slip = Math.abs(lat);
+  if (drive.throttle > 0) fwd += t.accel * drive.throttle * dt;
+  else if (drive.throttle < 0) {
+    if (fwd > 8) fwd += t.brake * drive.throttle * dt;
+    else fwd += t.accel * 0.55 * drive.throttle * dt;
   } else {
-    fSpeed -= Math.sign(fSpeed) * Math.min(Math.abs(fSpeed), t.coast * dt);
+    // Coast: drag toward zero.
+    const drag = t.coast * dt;
+    fwd -= Math.sign(fwd) * Math.min(Math.abs(fwd), drag);
   }
-
-  // `drive.gripScale` lets the world slick the roads (rain) without
-  // touching the car's own handling numbers: grip is the whole drift
-  // model, so scaling it scales the slide.
-  const grip = (drive.handbrake ? t.gripHand : t.grip) * (drive.gripScale ?? 1);
-  const decay = Math.exp(-grip * dt);
-  latX *= decay;
-  latY *= decay;
-  car.vx = fSpeed * nfx + latX;
-  car.vy = fSpeed * nfy + latY;
-  car.speed = fSpeed;
-  car.handbrake = drive.handbrake;
-  car.slip = Math.hypot(latX, latY);
-
-  const prevX = car.x;
-  const prevY = car.y;
-  car.x += car.vx * dt;
-  car.y += car.vy * dt;
-
-  // Nose and tail circles against the city. A hard stop is an impact.
-  let impact = 0;
-  const half = t.w / 4;
-  for (const s of [1, -1]) {
-    const probe = { x: car.x + nfx * half * s, y: car.y + nfy * half * s };
-    const r = t.h / 2 + 1;
-    if (circleBlocked(city, probe.x, probe.y, r)) {
-      const before = Math.hypot(car.vx, car.vy);
-      resolveCircle(city, probe, r);
-      car.x += probe.x - (car.x + nfx * half * s);
-      car.y += probe.y - (car.y + nfy * half * s);
-      const after = Math.hypot(car.vx, car.vy);
-      // Kill the velocity into the wall, keep the slide along it.
-      const nx = probe.x - car.x;
-      const ny = probe.y - car.y;
-      const nl = Math.hypot(nx, ny) || 1;
-      const into = (car.vx * nx + car.vy * ny) / nl;
-      if (into < 0) {
-        car.vx -= (nx / nl) * into * 1.4;
-        car.vy -= (ny / nl) * into * 1.4;
-      }
-      impact = Math.max(impact, before - after);
-    }
-  }
-  // If the body still overlaps after the nose/tail pushes, nudge it free.
-  if (circleBlocked(city, car.x, car.y, t.h / 2)) {
-    resolveCircle(city, car, t.h / 2);
-    car.x = car.x;
-    car.y = car.y;
-    void prevX;
-    void prevY;
-  }
-  return impact;
+  const vMax = drive.throttle < 0 && fwd < 0 ? -t.revMax : t.vMax;
+  fwd = clamp(fwd, -t.revMax, vMax);
+  // Steering only bites while moving; faster = a little less lock.
+  const speedFactor = clamp(Math.abs(fwd) / 140, 0, 1);
+  const steerRate = t.steer * (1 - 0.45 * speedFactor) * Math.sign(fwd || 1);
+  car.angle += drive.steer * steerRate * dt * clamp(Math.abs(fwd) / 60, 0.25, 1);
+  car.vx = fx * fwd - fy * lat;
+  car.vy = fy * fwd + fx * lat;
+  car.speed = fwd;
+  const nx = car.x + car.vx * dt;
+  const ny = car.y + car.vy * dt;
+  const r = carRadius(car) * 0.8;
+  if (!circleBlocked(city, nx, car.y, r)) car.x = nx;
+  else { car.vx *= -0.25; car.speed *= 0.4; if (Math.abs(car.speed) > 240) car.hp -= 1; }
+  if (!circleBlocked(city, car.x, ny, r)) car.y = ny;
+  else { car.vy *= -0.25; car.speed *= 0.4; if (Math.abs(car.speed) > 240) car.hp -= 1; }
+  car.x = clamp(car.x, 24, WORLD - 24);
+  car.y = clamp(car.y, 24, WORLD - 24);
+  if (car.hp <= 0 && !car.dead) { car.dead = true; car.hp = 0; }
 }
 
-/** Push two cars apart and trade a little velocity; returns impact speed. */
+// Push two overlapping cars apart and swap a little momentum.
 export function collideCars(a, b) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  const ra = carRadius(a);
-  const rb = carRadius(b);
   const d = Math.hypot(dx, dy);
-  const min = ra + rb;
-  if (d >= min || d < 0.01) return 0;
-  const nx = dx / d;
-  const ny = dy / d;
-  const overlap = min - d;
-  const totalMass = a.type.mass + b.type.mass;
-  a.x -= nx * overlap * (b.type.mass / totalMass);
-  a.y -= ny * overlap * (b.type.mass / totalMass);
-  b.x += nx * overlap * (a.type.mass / totalMass);
-  b.y += ny * overlap * (a.type.mass / totalMass);
+  const min = carRadius(a) * 0.8 + carRadius(b) * 0.8;
+  if (d <= 0.01 || d >= min) return;
+  const push = (min - d) / 2;
+  const nx = dx / d; const ny = dy / d;
+  const wa = a.type.mass; const wb = b.type.mass;
+  a.x -= nx * push * (wb / (wa + wb)) * 2 * 0.5;
+  a.y -= ny * push * (wb / (wa + wb)) * 2 * 0.5;
+  b.x += nx * push * (wa / (wa + wb)) * 2 * 0.5;
+  b.y += ny * push * (wa / (wa + wb)) * 2 * 0.5;
   const rel = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
   if (rel < 0) {
-    const impulse = -rel * 0.7;
-    a.vx -= nx * impulse * (b.type.mass / totalMass);
-    a.vy -= ny * impulse * (b.type.mass / totalMass);
-    b.vx += nx * impulse * (a.type.mass / totalMass);
-    b.vy += ny * impulse * (a.type.mass / totalMass);
-    return -rel;
+    const imp = -rel * 0.5;
+    a.vx -= nx * imp / wa; a.vy -= ny * imp / wa;
+    b.vx += nx * imp / wb; b.vy += ny * imp / wb;
+    a.hp -= Math.abs(rel) * 0.02; b.hp -= Math.abs(rel) * 0.02;
   }
-  return 0;
 }
 
-/** Is the point ahead of `car` (distance `d`) blocked? Used by traffic AI. */
+// Is there a building or the map edge within `d` ahead of the car?
 export function aheadBlocked(city, car, d) {
-  const x = car.x + Math.cos(car.angle) * d;
-  const y = car.y + Math.sin(car.angle) * d;
-  return circleBlocked(city, x, y, 10);
+  const fx = Math.cos(car.angle); const fy = Math.sin(car.angle);
+  for (let s = 12; s <= d; s += 12) {
+    if (circleBlocked(city, car.x + fx * s, car.y + fy * s, 10)) return true;
+  }
+  return false;
 }
 
-/** Turn `current` toward `target` by at most `maxStep` radians. */
 export function turnToward(current, target, maxStep) {
-  let d = (target - current) % (Math.PI * 2);
-  if (d > Math.PI) d -= Math.PI * 2;
-  if (d < -Math.PI) d += Math.PI * 2;
+  const d = angleDiff(current, target);
   return current + clamp(d, -maxStep, maxStep);
 }
 
-/**
- * One step for the police helicopter. It does not drive the road grid — it
- * flies straight at a point on its orbit circle around the target, banking
- * into the turn, so it circles overhead instead of hovering on top of the
- * player. `heli` keeps x, y, angle, speed and wobble; `radius` is the orbit.
- */
+// Helicopter orbit: close in, then circle the target at `radius`.
 export function heliStep(heli, tx, ty, dt, speed, radius, wobble) {
-  const dx = tx - heli.x;
-  const dy = ty - heli.y;
+  const dx = tx - heli.x; const dy = ty - heli.y;
   const d = Math.hypot(dx, dy) || 1;
-  // Aim at the near side of the orbit circle, not at the player: that is
-  // what makes it circle instead of parking overhead.
-  const orbitAngle = Math.atan2(heli.y - ty, heli.x - tx) + 0.55;
-  const ox = tx + Math.cos(orbitAngle) * radius;
-  const oy = ty + Math.sin(orbitAngle) * radius;
-  const want = Math.atan2(oy - heli.y, ox - heli.x);
-  heli.angle = turnToward(heli.angle, want, 2.4 * dt);
-  heli.speed = Math.min(speed, heli.speed + 220 * dt);
-  const wob = wobble ?? 0;
-  heli.x += (Math.cos(heli.angle) * heli.speed + wob * 14) * dt;
-  heli.y += (Math.sin(heli.angle) * heli.speed + wob * 10) * dt;
-  // Far out, it closes straight in; on the circle it holds the orbit.
-  if (d > radius * 1.6) {
-    heli.x += (dx / d) * speed * 0.35 * dt;
-    heli.y += (dy / d) * speed * 0.35 * dt;
-  }
-  return heli;
+  heli.orbit = (heli.orbit ?? 0) + dt * 0.55;
+  const wantX = tx + Math.cos(heli.orbit) * radius;
+  const wantY = ty + Math.sin(heli.orbit) * radius;
+  const wx = wantX - heli.x; const wy = wantY - heli.y;
+  const wd = Math.hypot(wx, wy) || 1;
+  const sp = d > radius * 1.6 ? speed : speed * 0.55;
+  heli.x += (wx / wd) * sp * dt;
+  heli.y += (wy / wd) * sp * dt;
+  heli.x += Math.sin(heli.orbit * 2.3) * wobble * dt;
+  heli.y += Math.cos(heli.orbit * 1.7) * wobble * dt;
+  heli.angle = Math.atan2(wy, wx);
 }

@@ -80,7 +80,6 @@ createServer((request, response) => {
     'cache-control': 'no-store',
   });
   log(`${method} ${pathname} -> 200 (${size} bytes)`);
-  // A HEAD request gets the headers (content-type, length) and no body.
   if (method === 'HEAD') {
     response.end();
     return;
