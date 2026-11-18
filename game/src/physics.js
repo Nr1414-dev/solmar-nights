@@ -44,7 +44,10 @@ export function carStep(car, drive, dt, city) {
     fSpeed -= Math.sign(fSpeed) * Math.min(Math.abs(fSpeed), t.coast * dt);
   }
 
-  const grip = drive.handbrake ? t.gripHand : t.grip;
+  // `drive.gripScale` lets the world slick the roads (rain) without
+  // touching the car's own handling numbers: grip is the whole drift
+  // model, so scaling it scales the slide.
+  const grip = (drive.handbrake ? t.gripHand : t.grip) * (drive.gripScale ?? 1);
   const decay = Math.exp(-grip * dt);
   latX *= decay;
   latY *= decay;

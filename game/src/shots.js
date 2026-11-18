@@ -47,7 +47,7 @@ function driveToward(G, car, tx, ty) {
     const side = Math.abs(-dx * Math.sin(car.angle) + dy * Math.cos(car.angle));
     if (forward > 0 && forward < 90 && side < 30) { throttle = -0.7; break; }
   }
-  return { throttle, steer, handbrake: false };
+  return { throttle, steer, handbrake: false, gripScale: 1 - 0.25 * (G.weather?.rain ?? 0) };
 }
 
 /**
@@ -118,13 +118,17 @@ export function stageShot(name, G, audio) {
   if (name === 'title') return { screen: SCREEN_TITLE };
   if (name === 'drive') {
     G.clock = 0.74; // low sun over the marina
-    giveCar(G, 'sports', 1500, 1440, Math.PI); // west along the avenue, toward the garage
+    // The drive shot rides the new bike: the fastest, most fragile vehicle
+    // in Solmar, west along the avenue toward the garage.
+    giveCar(G, 'bike', 1500, 1440, Math.PI);
     startMission(G, 0);
     G.mission.phase = 1; // already stolen: drive to the garage
     const input = fakeInput(G, autopilotDrive(G, { x: LANDMARKS.safehouse.x, y: LANDMARKS.safehouse.y }));
     // Five seconds: still en route, the job objective still on the HUD.
     runSteps(G, audio, input, 5);
-    G.banner = { title: 'FIRST WHEELS', sub: 'Drive the car to Mara\'s garage', t: 0, dur: 6 };
+    // The bike is small: punch the camera in so it reads at a glance.
+    G.camera.zoom = 1.4;
+    G.banner = { title: 'FIRST WHEELS', sub: 'Ride the bike to Mara\'s garage', t: 0, dur: 6 };
     return { screen: SCREEN_PLAY };
   }
   if (name === 'foot') {

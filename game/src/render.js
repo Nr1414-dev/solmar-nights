@@ -9,6 +9,7 @@ import { LANDMARKS, ROAD_CENTRES } from './city.js';
 import { PALETTE, ROAD_W, VIEW_H, VIEW_W, WORLD } from './config.js';
 import { clamp, lerp } from './random.js';
 import { missionTarget } from './missions.js';
+import { gangAliveCount } from './gangs.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_HOWTO = 'howto';
@@ -289,6 +290,34 @@ export function createRenderer(canvas) {
     ctx.beginPath();
     ctx.ellipse(3, 4, w / 2, h / 2 + 2, 0, 0, Math.PI * 2);
     ctx.fill();
+    if (car.typeKey === 'bike') {
+      // A bike is wheels, a slim frame and a rider leaning forward — no
+      // cabin, no roof, nothing between Dana and the road.
+      ctx.fillStyle = '#1c1c1c';
+      ctx.beginPath();
+      ctx.arc(-w / 2 + 4, 0, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(w / 2 - 4, 0, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = car.color;
+      roundRect(-w / 2 + 2, -3, w - 4, 6, 3);
+      ctx.fill();
+      ctx.fillStyle = '#2c3e50';
+      ctx.beginPath();
+      ctx.arc(-3, 0, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ecf0f1';
+      ctx.beginPath();
+      ctx.arc(5, 0, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#2c3e50';
+      ctx.beginPath();
+      ctx.arc(5, 0, 4.5, Math.PI, 0);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
     // Body.
     ctx.fillStyle = car.color;
     roundRect(-w / 2, -h / 2, w, h, 6);
@@ -382,6 +411,15 @@ export function createRenderer(canvas) {
       ctx.beginPath();
       ctx.arc(7, 0, 5.5, -Math.PI * 0.6, Math.PI * 0.6);
       ctx.fill();
+    }
+    if (o.gang) {
+      // A Salt King: dark red bandana over the head, knot at the back.
+      ctx.fillStyle = '#8b0000';
+      ctx.beginPath();
+      ctx.arc(7, 0, 5.5, -Math.PI * 0.7, Math.PI * 0.7);
+      ctx.fill();
+      ctx.fillStyle = '#ff2e2e';
+      ctx.fillRect(0, -2, 5, 4);
     }
     if (o.hailing) {
       ctx.rotate(-angle);
@@ -505,6 +543,11 @@ export function createRenderer(canvas) {
       if (cop.dead) continue;
       drawPerson(cop.x, cop.y, cop.angle, '#1a2a4a', '#e0ac69', { cap: true });
     }
+    // The Salt Kings, out hunting: dark red shirts, red bandanas.
+    for (const m of G.gangs.active) {
+      if (m.dead) continue;
+      drawPerson(m.x, m.y, m.angle, '#7a1f1f', '#e0ac69', { gang: true });
+    }
     // The player, on foot.
     const p = G.player;
     if (!p.inCar) {
@@ -556,12 +599,31 @@ export function createRenderer(canvas) {
     }
     ctx.restore();
 
-    // Night falls over the world, then the damage vignette.
+    // Night falls over the world, then the rain, then the damage vignette.
     if (night > 0.02) {
       ctx.save();
       screenTransform();
       ctx.fillStyle = `rgba(8,12,44,${0.36 * night})`;
       ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      ctx.restore();
+    }
+    if (G.weather.rain > 0.05) {
+      // A storm: the sky darkens and the rain streaks slant across the
+      // screen, falling faster than the eye can follow one drop.
+      ctx.save();
+      screenTransform();
+      ctx.fillStyle = `rgba(10,16,34,${0.10 * G.weather.rain})`;
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      ctx.strokeStyle = `rgba(180,200,230,${0.35 * G.weather.rain})`;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < 110; i++) {
+        const sx = (((i * 173.31) % 1280) + G.time * 60) % 1280;
+        const sy = ((i * 311.7 + G.time * 720) % 760) - 20;
+        ctx.moveTo(sx, sy);
+        ctx.lineTo(sx - 6, sy + 18);
+      }
+      ctx.stroke();
       ctx.restore();
     }
     if (G.player.hp < 45 && G.player.hp > 0) {
@@ -611,6 +673,7 @@ export function createRenderer(canvas) {
       if (car.ai === 'police' && !car.dead) blip(car.x, car.y, Math.floor(G.time * 4) % 2 === 0 ? '#ff2e2e' : '#2e7dff', 4);
     }
     for (const cop of G.police) if (!cop.dead) blip(cop.x, cop.y, '#2e7dff', 3);
+    for (const m of G.gangs.active) if (!m.dead) blip(m.x, m.y, '#ff2e2e', 3);
     if (G.taxi.state === 'toPickup' && G.taxi.passenger) blip(G.taxi.passenger.x, G.taxi.passenger.y, '#7cff4d', 4);
     if (G.taxi.state === 'toDest' && G.taxi.dest) blip(G.taxi.dest.x, G.taxi.dest.y, '#7cff4d', 5);
     const target = missionTarget(G);
@@ -688,6 +751,18 @@ export function createRenderer(canvas) {
       ctx.textAlign = 'left';
       ctx.fillText('No job running — visit Mara at the safehouse (yellow house icon).', 30, 39);
     }
+    // Salt Kings hit squad, while one is hunting: how many are left, and
+    // what each one is worth.
+    const kingsLeft = gangAliveCount(G);
+    if (kingsLeft > 0) {
+      ctx.fillStyle = 'rgba(60,8,12,0.85)';
+      roundRect(16, 88, 430, 32, 10);
+      ctx.fill();
+      ctx.fillStyle = '#ff5a5a';
+      ctx.font = 'bold 13px system-ui, sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`⚠ SALT KINGS HIT SQUAD — ${kingsLeft} left  •  $150 bounty each`, 30, 109);
+    }
     // Cash, stars, health — top right.
     ctx.textAlign = 'right';
     ctx.fillStyle = '#7cff4d';
@@ -704,7 +779,7 @@ export function createRenderer(canvas) {
     ctx.fillStyle = w.stars > 0 ? '#ffd23e' : 'rgba(255,255,255,0.35)';
     ctx.fillText(stars, VIEW_W - 18, 74);
     ctx.restore();
-    // Health bar.
+    // Health bar, with the armor bar underneath it when Dana wears a vest.
     ctx.fillStyle = 'rgba(10,12,20,0.72)';
     roundRect(VIEW_W - 218, 84, 200, 18, 9);
     ctx.fill();
@@ -716,13 +791,24 @@ export function createRenderer(canvas) {
     ctx.font = 'bold 11px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText(`HEALTH ${Math.ceil(p.hp)}`, VIEW_W - 118, 97);
-    // Clock + district, top centre.
+    if (p.armor > 0) {
+      ctx.fillStyle = 'rgba(10,12,20,0.72)';
+      roundRect(VIEW_W - 218, 106, 200, 12, 6);
+      ctx.fill();
+      ctx.fillStyle = '#7fb7ff';
+      roundRect(VIEW_W - 216, 108, 196 * clamp(p.armor / 100, 0, 1), 8, 4);
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 9px system-ui, sans-serif';
+      ctx.fillText(`ARMOR ${Math.ceil(p.armor)}`, VIEW_W - 118, 115);
+    }
+    // Clock + district, top centre — with a rain warning in a storm.
     ctx.fillStyle = 'rgba(10,12,20,0.6)';
-    roundRect(VIEW_W / 2 - 70, 14, 140, 30, 10);
+    roundRect(VIEW_W / 2 - 85, 14, 170, 30, 10);
     ctx.fill();
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 14px system-ui, sans-serif';
-    ctx.fillText(`${nightFactor(G) > 0.4 ? '☾' : '☀'} ${clockText(G)}`, VIEW_W / 2, 34);
+    ctx.fillText(`${G.weather.rain > 0.3 ? '☂ RAIN ' : nightFactor(G) > 0.4 ? '☾ ' : '☀ '}${clockText(G)}`, VIEW_W / 2, 34);
     // Weapon + ammo, bottom right.
     ctx.textAlign = 'right';
     ctx.fillStyle = '#ffffff';
@@ -913,6 +999,7 @@ export function createRenderer(canvas) {
       ['WASD / Arrows', 'Move on foot, drive when in a car'],
       ['Shift', 'Sprint on foot'],
       ['E', 'Steal / enter a car, get out, use shops, take Mara\'s jobs'],
+      ['F', 'Buy body armor at Ironworks Arms (+50 armor, takes hits first)'],
       ['Space', 'Punch on foot — handbrake while driving'],
       ['Mouse + Click', 'Aim and shoot your pistol'],
       ['Q', 'Horn — scatters pedestrians'],
@@ -922,6 +1009,14 @@ export function createRenderer(canvas) {
       ['THE CITY', 'Steal cars, take jobs from Mara at the safehouse,'],
       ['', 'run taxi fares in a yellow cab, find 12 hidden packages,'],
       ['', 'buy ammo at Ironworks Arms, respray at Color Rush to lose heat.'],
+      ['', 'Motorcycles are the fastest ride in Solmar — and the most fragile.'],
+      ['', ''],
+      ['SALT KINGS', 'After your first job the Kings send armed hit squads.'],
+      ['', 'Each King you drop pays a $150 bounty; wipe the squad for $200.'],
+      ['', 'Outrun them and they catch up off-screen — fight through.'],
+      ['', ''],
+      ['RAIN', 'Storms roll in off the bay: wet roads cut every car\'s grip,'],
+      ['', 'so braking distances grow and handbrake turns slide further.'],
       ['', ''],
       ['THE HEAT', 'Crimes count when someone sees them. Break line of sight'],
       ['', 'and stay hidden to cool the stars — or respray the car.'],
@@ -964,7 +1059,7 @@ export function createRenderer(canvas) {
     });
     ctx.fillStyle = 'rgba(255,255,255,0.6)';
     ctx.font = '14px system-ui, sans-serif';
-    ctx.fillText(`Cash $${G.player.cash}  •  Jobs done ${G.stats.missionsDone}/6  •  Packages ${G.stats.packages}/12  •  Fares ${G.stats.fares}`, VIEW_W / 2, 580);
+    ctx.fillText(`Cash $${G.player.cash}  •  Jobs done ${G.stats.missionsDone}/6  •  Packages ${G.stats.packages}/12  •  Fares ${G.stats.fares}  •  Kings dropped ${G.stats.gangKills}`, VIEW_W / 2, 580);
     ctx.restore();
   }
 
@@ -1008,6 +1103,7 @@ export function createRenderer(canvas) {
       `Jobs completed: ${G.stats.missionsDone} / 6`,
       `Hidden packages: ${G.stats.packages} / 12`,
       `Taxi fares: ${G.stats.fares}`,
+      `Salt Kings dropped: ${G.stats.gangKills}  •  Hit squads cleared: ${G.stats.wavesCleared}`,
       `Cars stolen: ${G.stats.carsStolen}`,
       `Time on the street: ${Math.floor(G.playSeconds / 60)}m ${Math.floor(G.playSeconds % 60)}s`,
     ];

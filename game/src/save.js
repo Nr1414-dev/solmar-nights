@@ -23,6 +23,7 @@ export function writeSave(G) {
     const data = {
       cash: G.player.cash,
       ammo: G.player.ammo,
+      armor: G.player.armor,
       missionIndex: G.missionIndex,
       packages: G.stats.packages,
       takenPackages: taken,

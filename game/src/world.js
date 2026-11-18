@@ -5,12 +5,13 @@
 // side job, shops, pickups, particles and the camera. Missions plug in from
 // missions.js; the wanted rules from wanted.js.
 
-import { DAY_LENGTH, ECONOMY, LANE_OFFSET, PLAYER, VEHICLE_TYPES, WANTED } from './config.js';
+import { DAY_LENGTH, ECONOMY, LANE_OFFSET, PLAYER, VEHICLE_TYPES, WANTED, WEATHER } from './config.js';
 import { LANDMARKS, ROAD_CENTRES, createCity, circleBlocked, districtNameAt, isOnRoad, nearestRoadCentre, nearestRoadPoint, randomSidewalkSpot, resolveCircle } from './city.js';
 import { createRandom, angleDiff, clamp, dist } from './random.js';
 import { aheadBlocked, carRadius, carStep, collideCars } from './physics.js';
 import { addCrime, clearWanted, createWanted, updateWanted } from './wanted.js';
 import { MISSIONS, missionTarget, startMission, updateMission } from './missions.js';
+import { createGangs, killGangMember, updateGangs } from './gangs.js';
 
 const PED_SHIRTS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6', '#1abc9c', '#e67e22', '#ecf0f1', '#fd79a8', '#00cec9'];
 const PED_SKINS = ['#f1c27d', '#e0ac69', '#c68642', '#8d5524', '#ffdbac'];
@@ -39,6 +40,7 @@ export function createWorld(seed, save) {
     clock: 0.72, // golden hour: the sun low over the marina
     player: {
       x: 620, y: 640, angle: 0, vx: 0, vy: 0, hp: PLAYER.MAX_HP,
+      armor: save?.armor ?? 0,
       cash: save?.cash ?? ECONOMY.START_CASH,
       ammo: save?.ammo ?? 12,
       inCar: null, punchCd: 0, shootCd: 0, lastDamage: 99, moving: false,
@@ -47,6 +49,8 @@ export function createWorld(seed, save) {
     peds: [],
     police: [],
     rivals: [],
+    gangs: createGangs(),
+    weather: { state: 'clear', timer: 110, rain: 0 },
     particles: [],
     skidmarks: [],
     floaters: [],
@@ -55,7 +59,7 @@ export function createWorld(seed, save) {
     mission: { index: save?.missionIndex ?? 0, active: false, phase: 0, data: {}, timer: 0, def: null },
     missionIndex: save?.missionIndex ?? 0,
     missionCooldown: 0,
-    stats: { kills: 0, carsStolen: 0, missionsDone: 0, fares: 0, packages: save?.packages ?? 0 },
+    stats: { kills: 0, carsStolen: 0, missionsDone: 0, fares: 0, packages: save?.packages ?? 0, gangKills: 0, wavesCleared: 0 },
     taxi: { state: 'none', passenger: null, dest: null, fare: 0, cooldown: 0 },
     camera: { x: 620, y: 640, zoom: 1, trauma: 0, ox: 0, oy: 0 },
     banner: null,
@@ -120,12 +124,13 @@ function spawnParkedCars(G) {
     [1620, 540, 0, 'sedan'], [2100, 1020, Math.PI / 2, 'van'], [2580, 1500, 0, 'sedan'],
     [3060, 540, 0, 'sports'], [700, 2100, Math.PI / 2, 'pickup'], [1140, 2580, 0, 'sedan'],
     [2100, 3060, Math.PI / 2, 'truck'], [3060, 2100, 0, 'van'], [1620, 3060, 0, 'sedan'],
+    [760, 600, 0, 'bike'], [3060, 600, 0, 'bike'],
   ];
   for (const [x, y, a, t] of spots) spawnCar(G, x, y, a, t, 'parked');
 }
 
 function spawnTraffic(G, n) {
-  const types = ['sedan', 'sedan', 'sedan', 'taxi', 'sports', 'pickup', 'van', 'truck'];
+  const types = ['sedan', 'sedan', 'sedan', 'taxi', 'sports', 'pickup', 'van', 'truck', 'bike'];
   for (let i = 0; i < n; i++) {
     const p = randomRoadPoint(G);
     const dir = Math.floor(G.rng.next() * 4);
@@ -237,6 +242,13 @@ function damagePed(G, ped, dmg, fromX, fromY) {
 
 export function damagePlayer(G, dmg) {
   const p = G.player;
+  // Body armor takes the hit first, then health. Armor never regenerates —
+  // buy a fresh vest at Ironworks Arms.
+  if (p.armor > 0 && dmg > 0) {
+    const absorbed = Math.min(p.armor, dmg);
+    p.armor -= absorbed;
+    dmg -= absorbed;
+  }
   p.hp -= dmg;
   p.lastDamage = 0;
   addShake(G, 0.25);
@@ -278,6 +290,10 @@ function shootRay(G, fromX, fromY, angle) {
     if (best.kind) break;
     for (const cop of G.police) {
       if (!cop.dead && Math.hypot(cop.x - x, cop.y - y) < 13) { best = { d, kind: 'cop', obj: cop, x, y }; break; }
+    }
+    if (best.kind) break;
+    for (const m of G.gangs.active) {
+      if (!m.dead && Math.hypot(m.x - x, m.y - y) < 13) { best = { d, kind: 'gang', obj: m, x, y }; break; }
     }
     if (best.kind) break;
     for (const car of G.cars) {
@@ -327,6 +343,8 @@ export function updateWorld(G, input, audio, dt, screen, passedActions) {
   updateCars(G, audio, dt);
   updatePeds(G, audio, dt);
   updatePolice(G, audio, dt);
+  updateGangs(G, dt, { damagePlayer, damageCar });
+  updateWeather(G, dt);
   updateParticles(G, dt);
   updatePickups(G, audio, dt);
   updateTaxi(G, audio, dt);
@@ -393,7 +411,8 @@ function updatePlayer(G, input, actions, axes, mouseWorld, audio, dt) {
     const throttle = axes.y < 0 ? 1 : axes.y > 0 ? -1 : 0;
     const steer = axes.x;
     const handbrake = input.down('attack');
-    const impact = carStep(car, { throttle, steer, handbrake }, dt, G.city);
+    const gripScale = 1 - (1 - WEATHER.GRIP_WET) * G.weather.rain;
+    const impact = carStep(car, { throttle, steer, handbrake, gripScale }, dt, G.city);
     if (impact > 90) {
       damageCar(G, car, impact * 0.28);
       burst(G, car.x, car.y, 8, '#ffd23e', 160, 0.4, 3);
@@ -416,6 +435,13 @@ function updatePlayer(G, input, actions, axes, mouseWorld, audio, dt) {
       if (!ped.dead && dist(ped.x, ped.y, car.x, car.y) < carRadius(car) + 8 && Math.abs(car.speed) > 90) {
         killPed(G, ped);
         addCrime(G, 'runOver', ped.x, ped.y);
+        addShake(G, 0.2);
+      }
+    }
+    // Running over a King is self-defence too: bounty, no heat.
+    for (const m of G.gangs.active) {
+      if (!m.dead && dist(m.x, m.y, car.x, car.y) < carRadius(car) + 8 && Math.abs(car.speed) > 90) {
+        killGangMember(G, m);
         addShake(G, 0.2);
       }
     }
@@ -457,14 +483,18 @@ function updatePlayer(G, input, actions, axes, mouseWorld, audio, dt) {
     p.punchCd = PLAYER.PUNCH_COOLDOWN;
     audio.punch();
     let hitAny = false;
-    const check = (obj, isCop) => {
+    const check = (obj, kind) => {
       const d = dist(obj.x, obj.y, p.x, p.y);
       if (d < PLAYER.PUNCH_RANGE + 14 && Math.abs(angleDiff(p.angle, Math.atan2(obj.y - p.y, obj.x - p.x))) < 1.2) {
         hitAny = true;
-        if (isCop) {
+        if (kind === 'cop') {
           obj.hp -= PLAYER.PUNCH_DAMAGE;
           if (obj.hp <= 0) { obj.dead = true; addCrime(G, 'killCop', obj.x, obj.y); G.stats.kills++; }
           else { obj.state = 'chase'; }
+        } else if (kind === 'gang') {
+          // A King goes down swinging: bounty, no heat — self-defence.
+          obj.hp -= PLAYER.PUNCH_DAMAGE;
+          if (obj.hp <= 0) killGangMember(G, obj);
         } else {
           damagePed(G, obj, PLAYER.PUNCH_DAMAGE, p.x, p.y);
           addCrime(G, 'punch', obj.x, obj.y);
@@ -472,8 +502,9 @@ function updatePlayer(G, input, actions, axes, mouseWorld, audio, dt) {
         burst(G, obj.x, obj.y, 6, '#ffffff', 120, 0.3, 3);
       }
     };
-    for (const ped of G.peds) if (!ped.dead) check(ped, false);
-    for (const cop of G.police) if (!cop.dead) check(cop, true);
+    for (const ped of G.peds) if (!ped.dead) check(ped, 'ped');
+    for (const cop of G.police) if (!cop.dead) check(cop, 'cop');
+    for (const m of G.gangs.active) if (!m.dead) check(m, 'gang');
     if (hitAny) addShake(G, 0.12);
   }
 
@@ -495,6 +526,10 @@ function updatePlayer(G, input, actions, axes, mouseWorld, audio, dt) {
       addCrime(G, 'shoot', p.x, p.y);
       if (hit.kind === 'ped') {
         damagePed(G, hit.obj, PLAYER.SHOOT_DAMAGE, p.x, p.y);
+        audio.hit();
+      } else if (hit.kind === 'gang') {
+        hit.obj.hp -= PLAYER.SHOOT_DAMAGE;
+        if (hit.obj.hp <= 0) killGangMember(G, hit.obj);
         audio.hit();
       } else if (hit.kind === 'cop') {
         hit.obj.hp -= PLAYER.SHOOT_DAMAGE;
@@ -632,7 +667,7 @@ function updateTrafficCar(G, car, dt) {
     if (forward > 0 && forward < 60 && side < 26) { throttle = -0.8; break; }
   }
   const steer = trafficSteerTo(car, laneX, laneY);
-  const impact = carStep(car, { throttle, steer, handbrake: false }, dt, G.city);
+  const impact = carStep(car, { throttle, steer, handbrake: false, gripScale: wetGrip(G) }, dt, G.city);
   if (impact > 120) damageCar(G, car, impact * 0.2);
 }
 
@@ -666,7 +701,7 @@ function updatePoliceCar(G, car, dt) {
   }
   const steer = trafficSteerTo(car, tx, ty);
   if (aheadBlocked(G.city, car, 60)) throttle = -0.5;
-  const impact = carStep(car, { throttle, steer, handbrake: false }, dt, G.city);
+  const impact = carStep(car, { throttle, steer, handbrake: false, gripScale: wetGrip(G) }, dt, G.city);
   if (impact > 100) {
     damageCar(G, car, impact * 0.15);
     addShake(G, 0.1);
@@ -686,7 +721,7 @@ function updateRivalCar(G, car, dt) {
   const steer = trafficSteerTo(car, cp.x, cp.y);
   let throttle = car.speed < 330 ? 1 : 0.2;
   if (aheadBlocked(G.city, car, 80)) throttle = -0.4;
-  carStep(car, { throttle, steer, handbrake: false }, dt, G.city);
+  carStep(car, { throttle, steer, handbrake: false, gripScale: wetGrip(G) }, dt, G.city);
 }
 
 // ---- pedestrians ----
@@ -827,6 +862,31 @@ function updatePoliceSpawns(G, dt) {
     const spot = nearestRoadPoint(p.x + Math.cos(a) * 420, p.y + Math.sin(a) * 420);
     spawnFootCop(G, spot.x, spot.y);
   }
+}
+
+// ---- weather ----
+
+/** Grip multiplier for the rain: 1 on dry roads, 0.75 in a storm. */
+function wetGrip(G) {
+  return 1 - (1 - WEATHER.GRIP_WET) * G.weather.rain;
+}
+
+/** Storms roll in off the bay every few minutes and pass; the rain level
+ *  eases in and out so the roads slick gradually instead of snapping. */
+function updateWeather(G, dt) {
+  const w = G.weather;
+  w.timer -= dt;
+  if (w.state === 'clear' && w.timer <= 0) {
+    w.state = 'storm';
+    w.timer = G.rng.range(WEATHER.STORM_MIN, WEATHER.STORM_MAX);
+    G.toast = { text: 'Storm rolling in off the bay — wet roads, less grip.', t: 0, dur: 4 };
+  } else if (w.state === 'storm' && w.timer <= 0) {
+    w.state = 'clear';
+    w.timer = G.rng.range(WEATHER.CLEAR_MIN, WEATHER.CLEAR_MAX);
+    G.toast = { text: 'The storm passed. Roads drying out.', t: 0, dur: 3 };
+  }
+  const target = w.state === 'storm' ? 1 : 0;
+  w.rain += clamp(target - w.rain, -dt * 0.5, dt * 0.5);
 }
 
 // ---- particles, pickups, taxi, shops ----
@@ -972,7 +1032,7 @@ function updateShops(G, actions, audio, dt) {
     if (d > 95) continue;
     if (lm.kind === 'gun') {
       G.nearShop = 'gun';
-      G.prompt = `Press E — Ironworks Arms: ${ECONOMY.AMMO_AMOUNT} rounds ($${ECONOMY.AMMO_PRICE})`;
+      G.prompt = `Press E — Ironworks Arms: ${ECONOMY.AMMO_AMOUNT} rounds ($${ECONOMY.AMMO_PRICE})  •  F — body armor +${ECONOMY.ARMOR_AMOUNT} ($${ECONOMY.ARMOR_PRICE})`;
       if (actions & 4) {
         if (p.cash >= ECONOMY.AMMO_PRICE) {
           p.cash -= ECONOMY.AMMO_PRICE;
@@ -982,6 +1042,20 @@ function updateShops(G, actions, audio, dt) {
         } else {
           audio.denied();
           floater(G, p.x, p.y - 30, `Need $${ECONOMY.AMMO_PRICE}`, '#ff9a9a');
+        }
+      }
+      // F buys a vest: armor takes hits before health does.
+      if (actions & 32) {
+        if (p.armor >= ECONOMY.ARMOR_MAX) {
+          floater(G, p.x, p.y - 30, 'Armor already full', '#ffffff');
+        } else if (p.cash >= ECONOMY.ARMOR_PRICE) {
+          p.cash -= ECONOMY.ARMOR_PRICE;
+          p.armor = Math.min(ECONOMY.ARMOR_MAX, p.armor + ECONOMY.ARMOR_AMOUNT);
+          audio.cash();
+          floater(G, p.x, p.y - 30, `+${ECONOMY.ARMOR_AMOUNT} ARMOR`, '#7fb7ff');
+        } else {
+          audio.denied();
+          floater(G, p.x, p.y - 30, `Need $${ECONOMY.ARMOR_PRICE}`, '#ff9a9a');
         }
       }
     } else if (lm.kind === 'diner') {

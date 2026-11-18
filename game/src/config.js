@@ -38,6 +38,11 @@ export const VEHICLE_TYPES = {
   sedan:   { accel: 210, vMax: 300, revMax: 95,  brake: 520, coast: 110, steer: 2.7, grip: 8.0, gripHand: 2.4, w: 46, h: 22, hp: 120, mass: 1.0, price: 0 },
   taxi:    { accel: 200, vMax: 295, revMax: 95,  brake: 520, coast: 110, steer: 2.7, grip: 8.0, gripHand: 2.4, w: 46, h: 22, hp: 120, mass: 1.0, price: 0 },
   sports:  { accel: 300, vMax: 420, revMax: 110, brake: 620, coast: 90,  steer: 3.1, grip: 9.5, gripHand: 2.6, w: 44, h: 20, hp: 100, mass: 0.9, price: 0 },
+  // A bike is the fastest thing on the street and the most fragile: huge
+  // acceleration and top speed, a narrow body that threads traffic, but
+  // low grip, a light frame that gets thrown around in a bump, and only
+  // 70 hp before it is a fireball. Steal one if you dare.
+  bike:    { accel: 330, vMax: 430, revMax: 110, brake: 560, coast: 80,  steer: 3.4, grip: 7.5, gripHand: 2.0, w: 32, h: 14, hp: 70,  mass: 0.45, price: 0 },
   pickup:  { accel: 180, vMax: 270, revMax: 85,  brake: 480, coast: 120, steer: 2.4, grip: 7.0, gripHand: 2.0, w: 50, h: 23, hp: 160, mass: 1.3, price: 0 },
   van:     { accel: 150, vMax: 240, revMax: 80,  brake: 450, coast: 130, steer: 2.2, grip: 6.5, gripHand: 1.8, w: 54, h: 24, hp: 180, mass: 1.5, price: 0 },
   truck:   { accel: 130, vMax: 210, revMax: 70,  brake: 420, coast: 140, steer: 1.9, grip: 6.0, gripHand: 1.6, w: 66, h: 26, hp: 220, mass: 1.9, price: 0 },
@@ -62,11 +67,27 @@ export const ECONOMY = {
   START_CASH: 250,
   AMMO_PRICE: 150,
   AMMO_AMOUNT: 24,
+  ARMOR_PRICE: 120,
+  ARMOR_AMOUNT: 50,
+  ARMOR_MAX: 100,
+  GANG_BOUNTY: 150,
+  WAVE_BONUS: 200,
   SPRAY_PRICE: 150,
   HEAL_PRICE: 40,
   PACKAGE_VALUE: 250,
   BUSTED_FINE: 150,
   WASTED_FINE: 200,
+};
+
+// Weather: storms roll in off the bay every few minutes and pass. Rain
+// slicks the roads — every car's grip drops by a quarter while it falls,
+// so a handbrake turn slides further and braking distances grow.
+export const WEATHER = {
+  CLEAR_MIN: 100,
+  CLEAR_MAX: 200,
+  STORM_MIN: 25,
+  STORM_MAX: 45,
+  GRIP_WET: 0.75,
 };
 
 export const DAY_LENGTH = 360; // seconds for a full day/night cycle

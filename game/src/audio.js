@@ -147,6 +147,7 @@ export function createAudio() {
     missionStart() { [523, 659, 784].forEach((f, i) => window.setTimeout(() => blip(f, 0.16, 'triangle', 0.35), i * 90)); },
     missionDone() { [523, 659, 784, 1046].forEach((f, i) => window.setTimeout(() => blip(f, 0.2, 'triangle', 0.35), i * 100)); },
     missionFail() { [392, 330, 262].forEach((f, i) => window.setTimeout(() => blip(f, 0.25, 'sawtooth', 0.25), i * 120)); },
+    gangWarn() { [220, 175, 220].forEach((f, i) => window.setTimeout(() => blip(f, 0.3, 'sawtooth', 0.3), i * 180)); },
     busted() { [330, 262, 196, 131].forEach((f, i) => window.setTimeout(() => blip(f, 0.3, 'sawtooth', 0.3), i * 160)); },
     door() { blip(180, 0.12, 'triangle', 0.3, 90); },
     denied() { blip(160, 0.15, 'square', 0.25, 110); },
