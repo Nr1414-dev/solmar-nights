@@ -26,6 +26,26 @@ export function createRandom(seed) {
     chance(p) {
       return this.next() < p;
     },
+    /** A shuffled copy (Fisher-Yates), so callers can deal a random order without mutating the source list. */
+    shuffle(list) {
+      const out = list.slice();
+      for (let i = out.length - 1; i > 0; i--) {
+        const j = Math.floor(this.next() * (i + 1));
+        [out[i], out[j]] = [out[j], out[i]];
+      }
+      return out;
+    },
+    /** Pick a value from [value, weight] pairs, weighted by the second element. */
+    weightedPick(pairs) {
+      let total = 0;
+      for (const [, w] of pairs) total += w;
+      let roll = this.next() * total;
+      for (const [v, w] of pairs) {
+        roll -= w;
+        if (roll <= 0) return v;
+      }
+      return pairs[pairs.length - 1][0];
+    },
   };
 }
 

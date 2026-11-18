@@ -10,7 +10,7 @@
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
@@ -18,6 +18,50 @@ import { buildDossier } from './vendor/makefun-game.ts';
 const here = fileURLToPath(new URL('.', import.meta.url));
 // The grader hands the entry /output; a local run takes MAKEFUN_OUTPUT_DIR.
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+
+function fail(message: string): never {
+  throw new Error(`SOLMAR NIGHTS build: ${message}`);
+}
+
+function requireFile(path: string, why: string): void {
+  if (!existsSync(path) || !statSync(path).isFile()) fail(`missing ${path} — ${why}`);
+}
+
+// Pre-flight: the v2 systems the entry promises must be in the tree before
+// anything is copied, so a half-built checkout fails loudly here instead of
+// handing in a game without its bikes, hit squads or favicon.
+const REQUIRED = [
+  ['game/index.html', 'the playable page'],
+  ['game/favicon.svg', 'the v2 favicon (linked from index.html)'],
+  ['game/src/gangs.js', 'the v2 Salt Kings hit squads'],
+  ['game/src/main.js', 'the game boot and loop'],
+  ['game/src/wanted.js', 'the witness-based wanted system'],
+] as const;
+for (const [rel, why] of REQUIRED) requireFile(join(here, rel), why);
+
+// The favicon must actually be wired: a file nobody links is dead weight.
+const indexHtml = readFileSync(join(here, 'game/index.html'), 'utf8');
+if (!indexHtml.includes('favicon.svg')) fail('game/index.html does not link game/favicon.svg');
+
+// Screenshots: 3 or 4, each inside the gate's 256 KiB cap, before the
+// dossier is built from them.
+const shotsDir = join(here, 'screenshots');
+const shotNames = existsSync(shotsDir) ? readdirSync(shotsDir).filter((n) => !n.startsWith('.')) : [];
+if (shotNames.length < 3 || shotNames.length > 4) {
+  fail(`screenshots/ holds ${shotNames.length} images, need 3 or 4`);
+}
+for (const name of shotNames) {
+  const size = statSync(join(shotsDir, name)).size;
+  if (size > 262144) fail(`screenshots/${name} is ${size} bytes, over the 256 KiB cap`);
+}
+
+function countFiles(dir: string): number {
+  let n = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    n += entry.isDirectory() ? countFiles(join(dir, entry.name)) : 1;
+  }
+  return n;
+}
 
 function copyTree(from: string, to: string): void {
   mkdirSync(to, { recursive: true });
@@ -43,4 +87,9 @@ const dossier = buildDossier(out, {
   game_path_max_bytes: 1000,
 });
 writeFileSync(join(out, 'dossier.json'), dossier);
-console.log(`Wrote ${join(out, 'dossier.json')} (${dossier.length} bytes)`);
+
+// Build stamp: what went in and how close the dossier text sits to its cap.
+const gameFiles = countFiles(join(out, 'game'));
+const textBytes = new TextEncoder().encode(JSON.parse(new TextDecoder().decode(dossier)).text).length;
+console.log(`SOLMAR NIGHTS v2 — ${gameFiles} game files, ${shotNames.length} screenshots`);
+console.log(`Wrote ${join(out, 'dossier.json')} (${dossier.length} bytes, text ${textBytes} / 163840 bytes)`);

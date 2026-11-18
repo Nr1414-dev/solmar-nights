@@ -6,7 +6,7 @@
 // time; the hotter you are, the longer each star takes to cool.
 
 import { WANTED } from './config.js';
-import { circleBlocked } from './city.js';
+import { circleBlocked, isOnRoad, isSaltKingsTurf } from './city.js';
 
 /** Line of sight between two points: true when no building stands between. */
 export function hasLineOfSight(G, x1, y1, x2, y2) {
@@ -32,10 +32,16 @@ export function createWanted() {
   };
 }
 
-function witnessesNear(G, x, y, radius) {
+/** A pedestrian close enough to see the crime. */
+function pedWitnessNear(G, x, y, radius) {
   for (const p of G.peds) {
     if (!p.dead && Math.hypot(p.x - x, p.y - y) < radius) return true;
   }
+  return false;
+}
+
+/** A cop on foot or in a car close enough to see the crime. */
+function copWitnessNear(G, x, y, radius) {
   for (const c of G.police) {
     if (!c.dead && Math.hypot(c.x - x, c.y - y) < radius) return true;
   }
@@ -51,8 +57,13 @@ export function addCrime(G, kind, x, y) {
   const px = x ?? G.player.x;
   const py = y ?? G.player.y;
   // A cop always counts as a witness; a pedestrian only if close enough.
-  // Killing a cop is reported by the radio no matter what.
-  const witnessed = kind === 'killCop' || witnessesNear(G, px, py, WANTED.CRIME_RADIUS);
+  // Killing a cop is reported by the radio no matter what. On Salt Kings
+  // turf, bystanders look the other way: a pedestrian only counts at half
+  // the usual distance, while a cop still counts at full range.
+  const onTurf = isSaltKingsTurf(px, py);
+  const witnessed = kind === 'killCop'
+    || copWitnessNear(G, px, py, WANTED.CRIME_RADIUS)
+    || pedWitnessNear(G, px, py, onTurf ? WANTED.CRIME_RADIUS / 2 : WANTED.CRIME_RADIUS);
   if (!witnessed) return false;
   w.heat = Math.min(100, w.heat + amount);
   w.hiddenTimer = 0;
@@ -96,7 +107,12 @@ export function updateWanted(G, dt) {
   } else {
     w.hiddenTimer += dt;
     w.flash += dt;
-    if (w.hiddenTimer >= WANTED.HIDE_TIME[w.stars]) {
+    // Laying low off the streets cools the heat faster: ducking into a
+    // block, an alley or a park beats sitting in traffic where patrols
+    // cruise past.
+    const layLow = !isOnRoad(p.x, p.y);
+    const coolAfter = WANTED.HIDE_TIME[w.stars] * (layLow ? 0.7 : 1);
+    if (w.hiddenTimer >= coolAfter) {
       w.heat = Math.max(0, w.heat - 25);
       w.hiddenTimer = 0;
       w.stars = wantedStars(w);
@@ -113,4 +129,5 @@ export function clearWanted(G) {
   G.wanted.stars = 0;
   G.wanted.hiddenTimer = 0;
   G.wanted.seen = false;
+  G.wanted.lastKnown = null;
 }

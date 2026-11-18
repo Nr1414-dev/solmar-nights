@@ -32,6 +32,13 @@ export function districtNameAt(x, y) {
   return DISTRICTS[districtAt(x, y)];
 }
 
+// The Salt Kings run the east strip: on their turf, bystanders look the
+// other way when a crime goes down (the wanted system halves the distance
+// at which a pedestrian counts as a witness there).
+export function isSaltKingsTurf(x, y) {
+  return districtAt(x, y) === 'docks';
+}
+
 // Landmarks the story and the shops live at. Fixed spots, so the missions and
 // the minimap always agree with the world.
 export const LANDMARKS = {
@@ -44,6 +51,7 @@ export const LANDMARKS = {
   hotel: { x: 700, y: 1680, name: 'The Palms Hotel', kind: 'hotel' },
   docks: { x: 3600, y: 1680, name: 'Dock 9', kind: 'docks' },
   marina: { x: 300, y: 1680, name: 'Marina Pier', kind: 'marina' },
+  arcade: { x: 2160, y: 700, name: 'Neon Arcade', kind: 'arcade' },
 };
 
 const SHOP_SIGNS = {
@@ -56,6 +64,7 @@ const SHOP_SIGNS = {
   safehouse: ['GARAGE', 'HOME'],
   docks: ['DOCK 9', 'FREIGHT'],
   marina: ['PIER', 'MARINA'],
+  arcade: ['ARCADE', 'NEON'],
 };
 
 export function createCity(seed) {
@@ -125,7 +134,7 @@ export function createCity(seed) {
       }
       if (district === 'downtown') {
         // Dense: two tall slabs per block with a plaza between them.
-        const split = rng.chance(0.5);
+        const split = rng.weightedPick([['vertical', 1], ['horizontal', 1]]) === 'vertical';
         if (split) {
           addBuilding(x0 + 24, y0 + 24, bw / 2 - 36, bh - 48, district);
           addBuilding(x0 + bw / 2 + 12, y0 + 24, bw / 2 - 36, bh - 48, district);
@@ -147,7 +156,13 @@ export function createCity(seed) {
         addTreesInBlock(x0, y0, x1, y1, 3);
         continue;
       }
-      // midtown: one or two mid-size blocks.
+      // midtown: one or two mid-size blocks — or a pocket park, so the
+      // district breathes between the buildings: trees and a pond, no walls.
+      if (rng.chance(0.18)) {
+        addTreesInBlock(x0, y0, x1, y1, 6);
+        props.push({ x: cx, y: cy, kind: 'pond', w: 110, h: 70, solid: false });
+        continue;
+      }
       if (rng.chance(0.6)) {
         addBuilding(x0 + 30, y0 + 30, rng.range(150, bw - 90), rng.range(120, bh - 90), district);
         if (rng.chance(0.5)) addBuilding(x0 + bw - 170, y0 + bh - 150, 130, 110, district, 'shop');
@@ -159,13 +174,16 @@ export function createCity(seed) {
   }
 
   // Landmark buildings sit on top of the generated ones, at fixed spots, with
-  // a neon sign so they read from the street and on the minimap.
-  for (const key of Object.keys(LANDMARKS)) {
+  // a neon sign so they read from the street and on the minimap. The neon
+  // colours are dealt in a shuffled order, so no two landmarks share a hue
+  // by accident of the palette order.
+  const neonOrder = rng.shuffle(PALETTE.neon);
+  for (const [i, key] of Object.keys(LANDMARKS).entries()) {
     const lm = LANDMARKS[key];
     const b = addBuilding(lm.x - 70, lm.y - 55, 140, 110, districtAt(lm.x, lm.y), 'landmark');
     b.landmark = key;
     const signText = SHOP_SIGNS[lm.kind] ?? [lm.name.toUpperCase()];
-    signs.push({ x: lm.x, y: lm.y - 62, text: signText[0], color: rng.pick(PALETTE.neon), sub: signText[1] ?? null });
+    signs.push({ x: lm.x, y: lm.y - 62, text: signText[0], color: neonOrder[i % neonOrder.length], sub: signText[1] ?? null });
   }
 
   // Street lamps at every intersection corner, hydrants and dumpsters scattered.

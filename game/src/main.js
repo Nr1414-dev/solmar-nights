@@ -11,7 +11,7 @@
 import { ECONOMY, MAX_FRAME, STEP } from './config.js';
 import { createRandom } from './random.js';
 import { createWorld, updateWorld } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
+import { ACTION_ATTACK, ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
 import { createAudio } from './audio.js';
 import { createRenderer, SCREEN_ENDING, SCREEN_HOWTO, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
 import { readSave, saveBest, writeSave } from './save.js';
@@ -69,7 +69,7 @@ function handleTitle() {
   const items = titleItems();
   if (axes.y < 0) selected = (selected + items.length - 1) % items.length;
   else if (axes.y > 0) selected = (selected + 1) % items.length;
-  const clicked = (actions & 8) !== 0;
+  const clicked = (actions & ACTION_ATTACK) !== 0;
   if (clicked) {
     // Clicking a menu row picks it.
     const my = input.mouse.y;
@@ -88,7 +88,7 @@ function handleTitle() {
 
 function handleHowTo() {
   const actions = input.takeActions();
-  if (actions & (ACTION_CONFIRM | 8)) {
+  if (actions & (ACTION_CONFIRM | ACTION_ATTACK)) {
     screen = SCREEN_TITLE;
     selected = 0;
   }
@@ -249,6 +249,20 @@ function runGame() {
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && screen === SCREEN_PLAY) {
+      screen = SCREEN_PAUSED;
+      selected = 0;
+      // Hiding the tab mid-job saves the run first: a closed tab no longer
+      // loses the mission in progress.
+      writeSave(world);
+      save = readSave();
+      announce('Paused — progress saved.');
+    }
+  });
+
+  // Losing the window (Alt-Tab, a clicked notification) pauses too, so the
+  // world never keeps running while the player is not looking at it.
+  window.addEventListener('blur', () => {
+    if (screen === SCREEN_PLAY) {
       screen = SCREEN_PAUSED;
       selected = 0;
       announce('Paused.');

@@ -5,7 +5,7 @@
 // marker and fail condition. Side work (taxi fares, hidden packages) lives
 // in world.js; this file is only the story chain.
 
-import { LANDMARKS } from './city.js';
+import { LANDMARKS, districtNameAt } from './city.js';
 import { clamp } from './random.js';
 
 const RACE_POINTS = [
@@ -55,7 +55,9 @@ export const MISSIONS = [
       return 'active';
     },
     objective(G) {
-      return G.mission.phase === 0 ? 'Steal a car — walk up to one and press E' : 'Drive the car to Mara\'s garage';
+      if (G.mission.phase === 0) return 'Steal a car — walk up to one and press E';
+      const d = Math.hypot(G.player.x - LANDMARKS.safehouse.x, G.player.y - LANDMARKS.safehouse.y);
+      return `Drive the car to Mara's garage — ${Math.max(0, Math.round(d / 10) * 10)}m away`;
     },
     target(G) {
       if (G.mission.phase === 0) {
@@ -134,6 +136,9 @@ export const MISSIONS = [
     start(G) {
       G.mission.phase = 0;
       G.mission.data.got = 0;
+      // A retry must not stack fresh drops on the ones left behind from the
+      // last attempt: clear the old cashbags before hiding three new ones.
+      G.pickups = G.pickups.filter((p) => p.kind !== 'cashbag');
       for (const s of COLLECT_SPOTS) {
         G.pickups.push({ kind: 'cashbag', x: s.x, y: s.y, taken: false, bob: 0 });
       }
@@ -145,7 +150,9 @@ export const MISSIONS = [
       return 'active';
     },
     objective(G) {
-      return `Collect the cash drops — ${G.mission.data.got ?? 0} of 3 found`;
+      const next = G.pickups.find((p) => p.kind === 'cashbag' && !p.taken);
+      const where = next ? ` — next drop: ${districtNameAt(next.x, next.y)}` : '';
+      return `Collect the cash drops — ${G.mission.data.got ?? 0} of 3 found${where}`;
     },
     target(G) {
       const next = G.pickups.find((p) => p.kind === 'cashbag' && !p.taken);

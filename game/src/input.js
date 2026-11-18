@@ -16,8 +16,8 @@ const KEYMAP = {
   KeyD: 'right', ArrowRight: 'right',
   ShiftLeft: 'sprint', ShiftRight: 'sprint',
   Space: 'attack',
-  KeyE: 'enter',
-  KeyF: 'interact',
+  KeyE: 'enter', KeyC: 'enter',
+  KeyF: 'interact', KeyV: 'interact',
   KeyQ: 'horn',
   KeyM: 'mute',
   KeyP: 'pause', Escape: 'pause',
@@ -36,7 +36,10 @@ export function createInput(canvas) {
       if (!keys.has(name)) pressed.add(name);
       keys.add(name);
       anyKey = true;
-      if (name === 'attack' || name === 'pause' || name === 'confirm') e.preventDefault();
+      // Every game key swallows the browser's default: without this, Space
+      // and the arrow keys scroll the page (and Space clicks a focused
+      // button) while the game is running.
+      e.preventDefault();
     }
   }
   function onKeyUp(e) {

@@ -25,8 +25,10 @@ const MIME = {
   '.gif': 'image/gif',
   '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
+  '.avif': 'image/avif',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.wasm': 'application/wasm',
   '.wav': 'audio/wav',
   '.mp3': 'audio/mpeg',
   '.ogg': 'audio/ogg',
@@ -34,18 +36,21 @@ const MIME = {
 };
 
 createServer((request, response) => {
+  const method = request.method ?? 'GET';
   const url = new URL(request.url ?? '/', 'http://localhost');
   let pathname;
   try {
     pathname = decodeURIComponent(url.pathname);
   } catch {
     response.writeHead(400).end('bad request');
+    console.log(`${method} ${url.pathname} -> 400`);
     return;
   }
   if (pathname.endsWith('/')) pathname += 'index.html';
   const file = resolve(join(root, normalize(pathname)));
   if (file !== root && !file.startsWith(root + sep)) {
     response.writeHead(403).end('forbidden');
+    console.log(`${method} ${pathname} -> 403`);
     return;
   }
   let size;
@@ -55,6 +60,7 @@ createServer((request, response) => {
     size = stats.size;
   } catch {
     response.writeHead(404).end('not found');
+    console.log(`${method} ${pathname} -> 404`);
     return;
   }
   response.writeHead(200, {
@@ -62,6 +68,12 @@ createServer((request, response) => {
     'content-length': size,
     'cache-control': 'no-store',
   });
+  console.log(`${method} ${pathname} -> 200 (${size} bytes)`);
+  // A HEAD request gets the headers (content-type, length) and no body.
+  if (method === 'HEAD') {
+    response.end();
+    return;
+  }
   createReadStream(file).pipe(response);
 }).listen(port, '127.0.0.1', () => {
   console.log(`game/ is on http://localhost:${port}`);
